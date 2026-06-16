@@ -1,0 +1,32 @@
+#version 450
+#extension GL_EXT_shader_8bit_storage : enable
+#extension GL_EXT_shader_16bit_storage : enable
+#extension GL_EXT_scalar_block_layout : enable
+#extension GL_ARB_gpu_shader_fp64 : require
+#extension GL_GOOGLE_include_directive : require
+
+#define SHADER
+#include "op_stack.h"
+
+layout (local_size_x = 64) in;
+
+layout (std430, binding = 0) readonly buffer StackBuffer {
+    uint count;
+    StackFrame data[1024];
+} stack;
+
+layout (scalar, set = 0, binding = 1) uniform ConstArgsBuffer {
+    uint count;
+    double data[512];
+} const_args;
+
+layout (std430, binding = 2) writeonly buffer OutputBuffer {
+    double data[];
+} buf_out;
+
+void main() {
+    uint index = gl_GlobalInvocationID.x;
+
+    buf_out.data[index] = const_args.data[0];
+}
+

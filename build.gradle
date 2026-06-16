@@ -23,7 +23,6 @@ loom {
 			sourceSet sourceSets.client
 		}
 	}
-
 }
 
 dependencies {
@@ -35,6 +34,22 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 	
+}
+
+tasks.register('buildNative', Exec) {
+	workingDir "src/native"
+	commandLine "cmake", "-B", "build"
+
+	doLast {
+		providers.exec {
+			workingDir "./"
+			commandLine "cmake", "--build", "src/native/build"
+		}.result.get()
+		copy {
+			from "src/native/build/output"
+			into "src/main/resources/natives"
+		}
+	}
 }
 
 processResources {
