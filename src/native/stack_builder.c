@@ -33,6 +33,7 @@ OpInfo* lookup_op(int op_type) {
 }
 
 int preorder_traversal_depth_count(Node* root) {
+    if (root->operationType == OP_CONST) return 0;
     int finalDepthLeft = 0;
     int finalDepthRight = 0;
     if (root->allChildren[0]) finalDepthLeft = preorder_traversal_depth_count(root->allChildren[0]);
@@ -164,17 +165,22 @@ void rotate_right(Node* tail) {
 }
 
 Node* tree_to_vine(Node* root) {
+    // Prevent bad child dereferences
+    if (root->operationType == OP_CONST) return root;
     Node pseudo_root;
-    Node* pseudo_children[2]   = { NULL, root };
-    pseudo_root.allChildren    = pseudo_children;   // point to valid memory
-    pseudo_root.type           = NODE_OP;
-    pseudo_root.operationType  = 0;
-    pseudo_root.label          = 0;
+    pseudo_root.allChildren = (Node*[2]){0};
+    pseudo_root.allChildren[1]    = root;
+    pseudo_root.allChildren[0]     = NULL;
+    pseudo_root.type     = NODE_OP;
+    pseudo_root.operationType = 0;
+    pseudo_root.label    = 0;
 
     Node* tail = &pseudo_root;
     Node* rest = tail->allChildren[1];
 
     while (rest != NULL) {
+        // Prevent bad child dereferences
+        if (rest->operationType == OP_CONST) break;
         if (rotation_is_safe(rest)) {
             rotate_right(tail);
             rest = tail->allChildren[1];   // re-examine the newly promoted node
@@ -189,20 +195,20 @@ Node* tree_to_vine(Node* root) {
 }
 
 Node* larger_opt_test_case() {
-    Node* add1 = create_op(OP_ADD, (Node **){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
-    Node* add2 = create_op(OP_ADD, (Node **){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11)});
-    Node* add3 = create_op(OP_ADD, (Node **){create_leaf(OP_CONST, 6), create_leaf(OP_CONST, 7)});
-    Node* add4 = create_op(OP_ADD, (Node **){add2, add3});
-    Node* add5 = create_op(OP_ADD, (Node **){create_leaf(OP_CONST, 12), create_leaf(OP_CONST, 13)});
-    Node* add6 = create_op(OP_ADD, (Node **){add4, add5});
-    Node* root = create_op(OP_ADD, (Node **){add1, add6});
+    Node* add1 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
+    Node* add2 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11)});
+    Node* add3 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 6), create_leaf(OP_CONST, 7)});
+    Node* add4 = create_op(OP_ADD, (Node *[]){add2, add3});
+    Node* add5 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 12), create_leaf(OP_CONST, 13)});
+    Node* add6 = create_op(OP_ADD, (Node *[]){add4, add5});
+    Node* root = create_op(OP_ADD, (Node *[]){add1, add6});
     return root;
 }
 
 Node* non_associativity_test_case() {
-    Node* min1 = create_op(OP_MIN, (Node **){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
-    Node* min2 = create_op(OP_MIN, (Node **){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11)});
-    Node* root = create_op(OP_MIN, (Node **){min1, min2});
+    Node* min1 = create_op(OP_MIN, (Node *[]){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
+    Node* min2 = create_op(OP_MIN, (Node *[]){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11)});
+    Node* root = create_op(OP_MIN, (Node *[]){min1, min2});
     return root;
 }
 
