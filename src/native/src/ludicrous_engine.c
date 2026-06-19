@@ -1,37 +1,41 @@
 #include <vulkan/vulkan.h>
+#include <jni.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <op_stack.h>
 #include <op_types.h>
+#include <unistd.h>
 
 #define ELEMENT_COUNT 1024
 #define BUFFER_SIZE (ELEMENT_COUNT * sizeof(double))
 
 typedef struct {
-    uint32_t count;
     StackFrame data[1024];
 } StackBuffer;
 
 typedef struct {
-    uint32_t count;
     double data[512];
 } ConstArgsBuffer;
 
 static uint32_t findMemoryType(VkPhysicalDevice physDev, uint32_t typeBits,
-                                VkMemoryPropertyFlags props) {
+                                VkMemoryPropertyFlags props)
+{
     VkPhysicalDeviceMemoryProperties memProps;
     vkGetPhysicalDeviceMemoryProperties(physDev, &memProps);
     for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
         if ((typeBits & (1 << i)) &&
             (memProps.memoryTypes[i].propertyFlags & props) == props)
+        {
             return i;
+        }
     }
-    return UINT32_MAX;
+    fprintf(stderr, "Could not find suitable GPU memory type\n");
+    exit(1);
 }
 
-// Loads compiled spir-v shader
+// Loads compiled spir-v shader from filepath
 static VkShaderModule createShaderModule(VkDevice device,
                                           const char *path) {
     FILE *f = fopen(path, "rb");
@@ -53,12 +57,23 @@ static VkShaderModule createShaderModule(VkDevice device,
     return mod;
 }
 
-// --- Buffer helpers ---
+static VkShaderModule createShaderModuleFromBytes(VkDevice device, uint32_t* spirv, size_t size) {
+    VkShaderModuleCreateInfo ci = {
+        .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+        .codeSize = size,
+        .pCode    = spirv,
+    };
+    VkShaderModule mod;
+    vkCreateShaderModule(device, &ci, NULL, &mod);
+    //free(spirv);
+    return mod;
+}
 
 static void createBuffer(VkDevice device, VkPhysicalDevice physDev,
                           VkDeviceSize size, VkBufferUsageFlags usage,
                           VkMemoryPropertyFlags memProps,
-                          VkBuffer *buf, VkDeviceMemory *mem) {
+                          VkBuffer *buf, VkDeviceMemory *mem)
+{
     VkBufferCreateInfo bci = {
         .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
         .size  = size,
@@ -79,32 +94,31 @@ static void createBuffer(VkDevice device, VkPhysicalDevice physDev,
     vkBindBufferMemory(device, *buf, *mem, 0);
 }
 
-// --- Main ---
-
-int main() {
-    // 1. Instance
-    VkApplicationInfo appInfo = {
-        .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .apiVersion = VK_API_VERSION_1_2,
-    };
-    VkInstanceCreateInfo instCI = {
-        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        .pApplicationInfo = &appInfo,
-    };
+int main(uint32_t* spirv, size_t size) {
+    // Create Vulkan instance with Vulkan API version 1.0
     VkInstance instance;
-    vkCreateInstance(&instCI, NULL, &instance);
+    vkCreateInstance(&(VkInstanceCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            .pApplicationInfo = &(VkApplicationInfo){
+                .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                .apiVersion = VK_API_VERSION_1_0,
+            },
+        }, NULL, &instance);
 
-    // 2. Physical device (pick first)
+    // Get Physical device (pick first)
     uint32_t devCount = 1;
     VkPhysicalDevice physDev;
     vkEnumeratePhysicalDevices(instance, &devCount, &physDev);
 
-    // 3. Find a compute queue family
-    uint32_t queueFamilyIndex = UINT32_MAX;
+    // Find a compute queue family
     uint32_t qfCount;
+    // Get number of queue family properties
     vkGetPhysicalDeviceQueueFamilyProperties(physDev, &qfCount, NULL);
-    VkQueueFamilyProperties *qfProps = malloc(qfCount * sizeof(*qfProps));
+    // Allocate and set queue family props
+    VkQueueFamilyProperties *qfProps = malloc(qfCount * sizeof(VkQueueFamilyProperties));
     vkGetPhysicalDeviceQueueFamilyProperties(physDev, &qfCount, qfProps);
+    // Find first occurrence of a Queue Family that supports compute operations
+    uint32_t queueFamilyIndex = UINT32_MAX;
     for (uint32_t i = 0; i < qfCount; i++) {
         if (qfProps[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
             queueFamilyIndex = i;
@@ -113,26 +127,24 @@ int main() {
     }
     free(qfProps);
 
-    // 4. Logical device + queue
-    float qPriority = 1.0f;
-    VkDeviceQueueCreateInfo qci = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-        .queueFamilyIndex = queueFamilyIndex,
-        .queueCount       = 1,
-        .pQueuePriorities = &qPriority,
-    };
-    VkDeviceCreateInfo dci = {
-        .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .queueCreateInfoCount = 1,
-        .pQueueCreateInfos    = &qci,
-    };
+    // Create Logical device with queue family
     VkDevice device;
-    vkCreateDevice(physDev, &dci, NULL, &device);
+    vkCreateDevice(physDev, &(VkDeviceCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            .queueCreateInfoCount = 1,
+            .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
+                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .queueFamilyIndex = queueFamilyIndex,
+                .queueCount = 1,
+                .pQueuePriorities = &(float){1.0f},
+            }
+        }, NULL, &device);
 
+    // Get device queue
     VkQueue queue;
     vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 
-    // 5. Buffers (host-visible for simplicity)
+    // Prepare host/cpu visible buffers
     VkBuffer stackBuf, constArgsBuf, outBuf;
     VkDeviceMemory stackMem, constArgsMem, outMem;
     VkMemoryPropertyFlags hostVisible =
@@ -145,7 +157,7 @@ int main() {
                  &stackBuf, &stackMem);
     // Create const args buffer
     createBuffer(device, physDev, sizeof(ConstArgsBuffer),
-                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT , hostVisible,
+                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostVisible,
                  &constArgsBuf, &constArgsMem);
     createBuffer(device, physDev, BUFFER_SIZE,
                  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostVisible,
@@ -154,13 +166,11 @@ int main() {
     // 6. Upload input data
     void *mapped1;
     StackBuffer stack = {0};
-    stack.count = 7;
     vkMapMemory(device, stackMem, 0, sizeof(StackBuffer), 0, &mapped1);
     memcpy(mapped1, &stack, sizeof(StackBuffer));
     vkUnmapMemory(device, stackMem);
     void *mapped2;
     ConstArgsBuffer const_args = {0};
-    const_args.count = 200;
     const_args.data[0] = 67.67f;
     vkMapMemory(device, constArgsMem, 0, sizeof(ConstArgsBuffer), 0, &mapped2);
     memcpy(mapped2, &const_args, sizeof(ConstArgsBuffer));
@@ -170,7 +180,7 @@ int main() {
     VkDescriptorSetLayoutBinding bindings[3] = {
         { .binding=0, .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
           .descriptorCount=1, .stageFlags=VK_SHADER_STAGE_COMPUTE_BIT },
-        { .binding=1, .descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        { .binding=1, .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
           .descriptorCount=1, .stageFlags=VK_SHADER_STAGE_COMPUTE_BIT },
         { .binding=2, .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
           .descriptorCount=1, .stageFlags=VK_SHADER_STAGE_COMPUTE_BIT },
@@ -183,7 +193,7 @@ int main() {
     VkDescriptorSetLayout descLayout;
     vkCreateDescriptorSetLayout(device, &dslCI, NULL, &descLayout);
 
-    // 8. Pipeline layout + compute pipeline
+    // Pipeline layout
     VkPipelineLayoutCreateInfo plCI = {
         .sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = 1,
@@ -192,8 +202,8 @@ int main() {
     VkPipelineLayout pipelineLayout;
     vkCreatePipelineLayout(device, &plCI, NULL, &pipelineLayout);
 
-    VkShaderModule shaderMod = createShaderModule(device, "compute/eval.spv");
-
+    // Create Compute Pipeline
+    VkShaderModule shaderMod = createShaderModuleFromBytes(device, spirv, size);
     VkComputePipelineCreateInfo cpCI = {
         .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         .stage  = {
@@ -241,7 +251,7 @@ int main() {
           .pBufferInfo=&stackInfo },
         { .sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet=descSet,
           .dstBinding=1, .descriptorCount=1,
-          .descriptorType=VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+          .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
           .pBufferInfo=&constArgsInfo },
         { .sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet=descSet,
           .dstBinding=2, .descriptorCount=1,
@@ -264,34 +274,43 @@ int main() {
         .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
         .commandBufferCount = 1,
     };
+
+    // Allocate command buffer
     VkCommandBuffer cmd;
     vkAllocateCommandBuffers(device, &cbAI, &cmd);
 
-    VkCommandBufferBeginInfo beginInfo = {
+    // Start recording for command buffer
+    vkBeginCommandBuffer(cmd, &(VkCommandBufferBeginInfo){
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    };
-    vkBeginCommandBuffer(cmd, &beginInfo);
+    });
+    // Bind compute pipeline to command buffer
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    // Bind compute pipeline descriptors to command buffer
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                              pipelineLayout, 0, 1, &descSet, 0, NULL);
     // local_size_x=64, so groups = ELEMENT_COUNT / 64
+    // Set the dispatched group sizes
     vkCmdDispatch(cmd, ELEMENT_COUNT / 64, 1, 1);
+    // Stop recording command buffer
     vkEndCommandBuffer(cmd);
 
-    // 12. Submit and wait
-    VkSubmitInfo submitInfo = {
-        .sType              = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .commandBufferCount = 1,
-        .pCommandBuffers    = &cmd,
-    };
-    VkFenceCreateInfo fCI = { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    // Create wait barrier
     VkFence fence;
-    vkCreateFence(device, &fCI, NULL, &fence);
-    vkQueueSubmit(queue, 1, &submitInfo, fence);
+    vkCreateFence(device,
+        &(VkFenceCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+        }, NULL, &fence);
+    // Execute compute pipeline via command buffer
+    vkQueueSubmit(queue, 1, &(VkSubmitInfo){
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &cmd,
+        }, fence);
+    // Wait for barrier complete signal
     vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
 
-    // 13. Read results
+    // Read results
     double *results;
     vkMapMemory(device, outMem, 0, BUFFER_SIZE, 0, (void **)&results);
     printf("out[0]=%f  out[1]=%f  out[1023]=%f\n",
@@ -312,4 +331,15 @@ int main() {
     vkDestroyDevice(device, NULL);
     vkDestroyInstance(instance, NULL);
     return 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_endrf_LudicrousEngine_addShader(JNIEnv* env, jclass cls, jobject byteBuffer) {
+    void* bufferPtr = (*env)->GetDirectBufferAddress(env, byteBuffer);
+    if (bufferPtr == nullptr) {
+        return;
+    }
+    uint32_t* dataPtr = (uint32_t*)(bufferPtr);
+    size_t len = (size_t)(*env)->GetDirectBufferCapacity(env, byteBuffer);
+    main(dataPtr, len);
 }

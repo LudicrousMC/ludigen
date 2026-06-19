@@ -10,8 +10,7 @@ typedef struct EvalState EvalState;
 
 struct StackFrame {
     uint8_t op_type;
-    uint8_t arg_types[3];
-    uint16_t arg_indexes[3];
+    int16_t arg_indexes[3];
     uint16_t const_index;
     uint8_t noise_index;
     uint8_t result_index;

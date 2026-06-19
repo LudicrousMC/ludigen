@@ -10,14 +10,16 @@
 
 layout (local_size_x = 64) in;
 
+/*layout (std140, binding = 0 uniform Information {
+    int stackLen;
+} info;*/
+
 layout (std430, binding = 0) readonly buffer StackBuffer {
-    uint count;
-    StackFrame data[1024];
+    StackFrame data[];
 } stack;
 
-layout (scalar, set = 0, binding = 1) uniform ConstArgsBuffer {
-    uint count;
-    double data[512];
+layout (std430, binding = 1) readonly buffer ConstArgsBuffer {
+    double data[];
 } const_args;
 
 layout (std430, binding = 2) writeonly buffer OutputBuffer {
@@ -27,6 +29,6 @@ layout (std430, binding = 2) writeonly buffer OutputBuffer {
 void main() {
     uint index = gl_GlobalInvocationID.x;
 
-    buf_out.data[index] = const_args.data[0];
+    buf_out.data[index] = const_args.data[index];
 }
 

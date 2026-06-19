@@ -52,6 +52,21 @@ tasks.register('buildNative', Exec) {
 	}
 }
 
+tasks.register("buildComputeShaders", Exec) {
+	workingDir "src/native"
+	def outDir = file("${workingDir}/build/compute")
+	if (!outDir.exists()) {
+		outDir.mkdir()
+	}
+	commandLine "glslc", "compute/eval.comp", "-o", "build/compute/eval.spv", "-I", "include/"
+	doLast {
+		copy {
+			from "src/native/build/compute"
+			into "src/main/resources/compute"
+		}
+	}
+}
+
 processResources {
 	def version = project.version
 	inputs.property "version", version
