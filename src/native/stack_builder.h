@@ -30,16 +30,8 @@ typedef struct Node {
     int             label;
     int             depth;
     double          value;
-    struct Node*    left;
-    struct Node*    right;
+    struct Node**   allChildren;
 } Node;
-
-typedef struct GenerateStackReturn {
-    int returnedNeededRegs;
-    int returnedIndex;
-    StackFrame* returnedStackFrames;
-    EvalStack* returnedEvalStack;
-} GenerateStackReturn;
 
 int max(int *arr, int n);
 void register_op(int op_type, int priority, int associative);
@@ -49,7 +41,7 @@ int generate_stack_recursive(EvalStack* evalStack, Node* node, int regPos);
 EvalStack* generate_stack_wrapper(Node* node);
 int two_args_op_gen(EvalStack* evalStack, StackFrame* currentNode, Node* node, int regPos);
 Node* create_leaf(int op_type, double theData);
-Node* create_op(int op_type, Node* left, Node* right);
+Node* create_op(int op_type, Node** allChildren);
 int rotation_is_safe(Node* rest);
 void rotate_right(Node* tail);
 Node* tree_to_vine(Node* root);
