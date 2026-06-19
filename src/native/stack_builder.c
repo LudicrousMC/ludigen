@@ -35,8 +35,8 @@ OpInfo* lookup_op(int op_type) {
 int preorder_traversal_depth_count(Node* root) {
     int finalDepthLeft = 0;
     int finalDepthRight = 0;
-    if (root->left) finalDepthLeft = preorder_traversal_depth_count(root->left);
-    if (root->right) finalDepthRight = preorder_traversal_depth_count(root->right);
+    if (root->allChildren[0]) finalDepthLeft = preorder_traversal_depth_count(root->allChildren[0]);
+    if (root->allChildren[1]) finalDepthRight = preorder_traversal_depth_count(root->allChildren[1]);
     if (finalDepthLeft > finalDepthRight)
         root->depth = finalDepthLeft;
     else
@@ -81,6 +81,7 @@ EvalStack* generate_stack_wrapper(Node* node) {
     evalStack->op_stack_len = 0;
     evalStack->const_args = (double*)malloc(0);
     evalStack->const_args_len = 0;
+    evalStack->max_reg = 0;
 
     generate_stack_recursive(evalStack, node, 0);
 
@@ -88,10 +89,10 @@ EvalStack* generate_stack_wrapper(Node* node) {
 }
 
 int two_args_op_gen(EvalStack* evalStack, StackFrame* currentNode, Node* node, int regPos) {
-    if (node->left && node->right) {
-        bool switchArgs = node->left->depth > node->right->depth;
-        currentNode->arg_indexes[switchArgs] = generate_stack_recursive(evalStack, switchArgs ? node->right : node->left, regPos + 1);
-        currentNode->arg_indexes[!switchArgs] = generate_stack_recursive(evalStack, switchArgs ? node->left : node->right, regPos);
+    if (node->allChildren[0] && node->allChildren[1]) {
+        bool switchArgs = node->allChildren[0]->depth > node->allChildren[1]->depth;
+        currentNode->arg_indexes[switchArgs] = generate_stack_recursive(evalStack, switchArgs ? node->allChildren[1] : node->allChildren[0], regPos + 1);
+        currentNode->arg_indexes[!switchArgs] = generate_stack_recursive(evalStack, switchArgs ? node->allChildren[0] : node->allChildren[1], regPos);
     }
     return regPos;
 }
@@ -103,18 +104,15 @@ Node* create_leaf(int op_type, double theData) {
     n->depth = 0;
     n->label   = 0;
     n->value = theData;
-    n->left    = n->right = NULL;
     return n;
 }
 
-Node* create_op(int op_type, Node* left, Node* right) {
+Node* create_op(int op_type, Node** theChildren) {
     Node* n    = (Node*)malloc(sizeof(Node));
     n->type    = NODE_OP;
     n->operationType = op_type;
     n->depth = 0;
     n->label   = 0;
-    n->left    = left;
-    n->right   = right;
 
     switch (op_type)
     {
@@ -123,6 +121,9 @@ Node* create_op(int op_type, Node* left, Node* right) {
     case OP_MIN:
     case OP_MAX:
         n->generate_stack_recursive_from_op = two_args_op_gen;
+        n->allChildren = (Node**)malloc(2 * sizeof(Node*));
+        n->allChildren[0] = theChildren[0];
+        n->allChildren[1] = theChildren[1];
         break;
     default:
         n->generate_stack_recursive_from_op = two_args_op_gen;
@@ -137,7 +138,7 @@ int rotation_is_safe(Node* rest) {
     // left_child  = rest->left  (the node we want to hoist)
 
     if (!rest || rest->type == NODE_LEAF) return 0;
-    Node* left_child = rest->left;
+    Node* left_child = rest->allChildren[0];
     if (!left_child || left_child->type == NODE_LEAF) return 0;
 
     OpInfo* op_rest  = lookup_op(rest->operationType);
@@ -155,53 +156,53 @@ int rotation_is_safe(Node* rest) {
 }
 
 void rotate_right(Node* tail) {
-    Node* old_root   = tail->right;
-    Node* new_root   = old_root->left;
-    old_root->left   = new_root->right;
-    new_root->right  = old_root;
-    tail->right      = new_root;
+    Node* old_root   = tail->allChildren[1];
+    Node* new_root   = old_root->allChildren[0];
+    old_root->allChildren[0]   = new_root->allChildren[1];
+    new_root->allChildren[1]  = old_root;
+    tail->allChildren[1]      = new_root;
 }
 
 Node* tree_to_vine(Node* root) {
     Node pseudo_root;
-    pseudo_root.right    = root;
-    pseudo_root.left     = NULL;
-    pseudo_root.type     = NODE_OP;
-    pseudo_root.operationType = 0;
-    pseudo_root.label    = 0;
+    Node* pseudo_children[2]   = { NULL, root };
+    pseudo_root.allChildren    = pseudo_children;   // point to valid memory
+    pseudo_root.type           = NODE_OP;
+    pseudo_root.operationType  = 0;
+    pseudo_root.label          = 0;
 
     Node* tail = &pseudo_root;
-    Node* rest = tail->right;
+    Node* rest = tail->allChildren[1];
 
     while (rest != NULL) {
         if (rotation_is_safe(rest)) {
             rotate_right(tail);
-            rest = tail->right;   // re-examine the newly promoted node
+            rest = tail->allChildren[1];   // re-examine the newly promoted node
         } else {
             // Cannot rotate here — skip down the right spine
             tail = rest;
-            rest = rest->right;
+            rest = rest->allChildren[1];
         }
     }
 
-    return pseudo_root.right;
+    return pseudo_root.allChildren[1];
 }
 
 Node* larger_opt_test_case() {
-    Node* add1 = create_op(OP_ADD, create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9));
-    Node* add2 = create_op(OP_ADD, create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11));
-    Node* add3 = create_op(OP_ADD, create_leaf(OP_CONST, 6), create_leaf(OP_CONST, 7));
-    Node* add4 = create_op(OP_ADD, add2, add3);
-    Node* add5 = create_op(OP_ADD, create_leaf(OP_CONST, 12), create_leaf(OP_CONST, 13));
-    Node* add6 = create_op(OP_ADD, add4, add5);
-    Node* root = create_op(OP_ADD, add1, add6);
+    Node* add1 = create_op(OP_ADD, (Node **){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
+    Node* add2 = create_op(OP_ADD, (Node **){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11)});
+    Node* add3 = create_op(OP_ADD, (Node **){create_leaf(OP_CONST, 6), create_leaf(OP_CONST, 7)});
+    Node* add4 = create_op(OP_ADD, (Node **){add2, add3});
+    Node* add5 = create_op(OP_ADD, (Node **){create_leaf(OP_CONST, 12), create_leaf(OP_CONST, 13)});
+    Node* add6 = create_op(OP_ADD, (Node **){add4, add5});
+    Node* root = create_op(OP_ADD, (Node **){add1, add6});
     return root;
 }
 
 Node* non_associativity_test_case() {
-    Node* min1 = create_op(OP_MIN, create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9));
-    Node* min2 = create_op(OP_MIN, create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11));
-    Node* root = create_op(OP_MIN, min1, min2);
+    Node* min1 = create_op(OP_MIN, (Node **){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
+    Node* min2 = create_op(OP_MIN, (Node **){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11)});
+    Node* root = create_op(OP_MIN, (Node **){min1, min2});
     return root;
 }
 
@@ -210,37 +211,41 @@ double get_arg(EvalStack* s, double* registers, int offset, int arg_num) {
     return pos < 0 ? s->const_args[abs(pos) - 1] : registers[pos];
 }
 
+double eval_stack(EvalStack* finalStack) {
+
+    printf("Registers Used: %d\n", finalStack->max_reg+1);
+    double* regArray = (double*)malloc(sizeof(double) * (finalStack->max_reg+1));
+
+    for (int i = finalStack->op_stack_len - 1; i >= 0; i--)
+    {
+        switch (finalStack->op_stack[i]->op_type)
+        {
+        case OP_ADD:
+            regArray[finalStack->op_stack[i]->result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1);
+            break;
+        case OP_MUL:
+            regArray[finalStack->op_stack[i]->result_index] = get_arg(finalStack, regArray, i, 0) * get_arg(finalStack, regArray, i, 1);
+            break;
+        case OP_MIN:
+            double arg1 = get_arg(finalStack, regArray, i, 0);
+            double arg2 = get_arg(finalStack, regArray, i, 1);
+            regArray[finalStack->op_stack[i]->result_index] = arg1 < arg2 ? arg1 : arg2;
+        default:
+            break;
+        }
+    }
+    printf("%lf\n", regArray[0]);
+    return regArray[0];
+}
+
 int main() {
     register_op(OP_ADD, 1, 1);   // lowest priority, associative - ADD
     register_op(OP_MUL, 2, 1);   // higher priority, associative - MULT
     register_op(OP_MIN, 1, 1);   // lowest priority, associative - MIN
 
     Node* root = tree_to_vine(larger_opt_test_case());
-
     EvalStack* theStack = generate_stack_wrapper(root);
-
-    printf("Registers Used: %d\n", theStack->max_reg+1);
-    double* regArray = (double*)malloc(sizeof(double) * (theStack->max_reg+1));
-
-    for (int i = theStack->op_stack_len - 1; i >= 0; i--)
-    {
-        switch (theStack->op_stack[i]->op_type)
-        {
-        case OP_ADD:
-            regArray[theStack->op_stack[i]->result_index] = get_arg(theStack, regArray, i, 0) + get_arg(theStack, regArray, i, 1);
-            break;
-        case OP_MUL:
-            regArray[theStack->op_stack[i]->result_index] = get_arg(theStack, regArray, i, 0) * get_arg(theStack, regArray, i, 1);
-            break;
-        case OP_MIN:
-            double arg1 = get_arg(theStack, regArray, i, 0);
-            double arg2 = get_arg(theStack, regArray, i, 1);
-            regArray[theStack->op_stack[i]->result_index] = arg1 < arg2 ? arg1 : arg2;
-        default:
-            break;
-        }
-    }
-    printf("%lf\n", regArray[0]);
+    double resultOfOps = eval_stack(theStack);
 
     return 0;
 }
