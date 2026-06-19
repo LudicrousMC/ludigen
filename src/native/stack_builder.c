@@ -98,6 +98,29 @@ int two_args_op_gen(EvalStack* evalStack, StackFrame* currentNode, Node* node, i
     return regPos;
 }
 
+int three_args_op_gen(EvalStack* evalStack, StackFrame* currentNode, Node* node, int regPos) {
+    if (node->allChildren[0] && node->allChildren[1] && node->allChildren[2]) {
+        Node* child[3];
+        for (int i = 0; i < 3; i++)
+            child[i] = node->allChildren[i];
+        
+        for (int i = 0; i < 2; i++) {
+            for (int j = 0; j < 2 - i; j++) {
+                if (child[j]->depth > child[j + 1]->depth) {
+                    Node* temp = child[j + 1];
+                    child[j + 1] = child[j];
+                    child[j] = temp;
+                }
+            }
+        }
+
+        bool switchArgs = node->allChildren[0]->depth > node->allChildren[1]->depth;
+        currentNode->arg_indexes[switchArgs] = generate_stack_recursive(evalStack, switchArgs ? node->allChildren[1] : node->allChildren[0], regPos + 1);
+        currentNode->arg_indexes[!switchArgs] = generate_stack_recursive(evalStack, switchArgs ? node->allChildren[0] : node->allChildren[1], regPos);
+    }
+    return regPos;
+}
+
 Node* create_leaf(int op_type, double theData) {
     Node* n    = (Node*)malloc(sizeof(Node));
     n->type    = NODE_LEAF;

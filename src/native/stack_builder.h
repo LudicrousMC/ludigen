@@ -40,6 +40,7 @@ int preorder_traversal_depth_count(Node* root);
 int generate_stack_recursive(EvalStack* evalStack, Node* node, int regPos);
 EvalStack* generate_stack_wrapper(Node* node);
 int two_args_op_gen(EvalStack* evalStack, StackFrame* currentNode, Node* node, int regPos);
+int three_args_op_gen(EvalStack* evalStack, StackFrame* currentNode, Node* node, int regPos)
 Node* create_leaf(int op_type, double theData);
 Node* create_op(int op_type, Node** theChildren);
 int rotation_is_safe(Node* rest);
