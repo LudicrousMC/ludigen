@@ -113,10 +113,9 @@ int three_args_op_gen(EvalStack* evalStack, StackFrame* currentNode, Node* node,
                 }
             }
         }
-
-        bool switchArgs = node->allChildren[0]->depth > node->allChildren[1]->depth;
-        currentNode->arg_indexes[switchArgs] = generate_stack_recursive(evalStack, switchArgs ? node->allChildren[1] : node->allChildren[0], regPos + 1);
-        currentNode->arg_indexes[!switchArgs] = generate_stack_recursive(evalStack, switchArgs ? node->allChildren[0] : node->allChildren[1], regPos);
+        
+        for (int i = 0; i < 3; i++)
+            currentNode->arg_indexes[i] = generate_stack_recursive(evalStack, node->allChildren[i], regPos + (2 - i));
     }
     return regPos;
 }
@@ -148,6 +147,13 @@ Node* create_op(int op_type, Node** theChildren) {
         n->allChildren = (Node**)malloc(2 * sizeof(Node*));
         n->allChildren[0] = theChildren[0];
         n->allChildren[1] = theChildren[1];
+        break;
+    case OP_SHIFTED_NOISE:
+        n->generate_stack_recursive_from_op = three_args_op_gen;
+        n->allChildren = (Node**)malloc(3 * sizeof(Node*));
+        n->allChildren[0] = theChildren[0];
+        n->allChildren[1] = theChildren[1];
+        n->allChildren[2] = theChildren[2];
         break;
     default:
         n->generate_stack_recursive_from_op = two_args_op_gen;
@@ -228,6 +234,17 @@ Node* larger_opt_test_case() {
     return root;
 }
 
+Node* larger_opt_test_case_three() {
+    Node* add1 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
+    Node* add2 = create_op(OP_SHIFTED_NOISE, (Node *[]){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11), create_leaf(OP_CONST, 10)});
+    Node* add3 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 6), create_leaf(OP_CONST, 7)});
+    Node* add4 = create_op(OP_ADD, (Node *[]){add2, add3});
+    Node* add5 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 12), create_leaf(OP_CONST, 13)});
+    Node* add6 = create_op(OP_ADD, (Node *[]){add4, add5});
+    Node* root = create_op(OP_ADD, (Node *[]){add1, add6});
+    return root;
+}
+
 Node* non_associativity_test_case() {
     Node* min1 = create_op(OP_MIN, (Node *[]){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
     Node* min2 = create_op(OP_MIN, (Node *[]){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11)});
@@ -259,6 +276,9 @@ double eval_stack(EvalStack* finalStack) {
             double arg1 = get_arg(finalStack, regArray, i, 0);
             double arg2 = get_arg(finalStack, regArray, i, 1);
             regArray[finalStack->op_stack[i]->result_index] = arg1 < arg2 ? arg1 : arg2;
+        case OP_SHIFTED_NOISE:
+            regArray[finalStack->op_stack[i]->result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
+            break;
         default:
             break;
         }
@@ -271,8 +291,9 @@ int main() {
     register_op(OP_ADD, 1, 1);   // lowest priority, associative - ADD
     register_op(OP_MUL, 2, 1);   // higher priority, associative - MULT
     register_op(OP_MIN, 1, 1);   // lowest priority, associative - MIN
+    register_op(OP_SHIFTED_NOISE, 1, 0);
 
-    Node* root = tree_to_vine(larger_opt_test_case());
+    Node* root = tree_to_vine(larger_opt_test_case_three());
     EvalStack* theStack = generate_stack_wrapper(root);
     double resultOfOps = eval_stack(theStack);
 
