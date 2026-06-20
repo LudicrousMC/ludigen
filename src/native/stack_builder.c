@@ -1,6 +1,6 @@
 #include <stdbool.h>
-#include "op_types.h"
-#include "op_stack.h"
+#include ".\include\op_types.h"
+#include ".\include\op_stack.h"
 #include "stack_builder.h"
 
 int max(int *arr, int n) {
@@ -34,14 +34,13 @@ OpInfo* lookup_op(int op_type) {
 
 int preorder_traversal_depth_count(Node* root) {
     if (root->operationType == OP_CONST) return 0;
-    int finalDepthLeft = 0;
-    int finalDepthRight = 0;
-    if (root->allChildren[0]) finalDepthLeft = preorder_traversal_depth_count(root->allChildren[0]);
-    if (root->allChildren[1]) finalDepthRight = preorder_traversal_depth_count(root->allChildren[1]);
-    if (finalDepthLeft > finalDepthRight)
-        root->depth = finalDepthLeft;
-    else
-        root->depth = finalDepthRight;
+    int* finalDepths = (int*)malloc(sizeof(int) * root->numChildren);
+
+    for (int i = 0; i < root->numChildren; i++) {
+        if (root->allChildren[i]) finalDepths[i] = preorder_traversal_depth_count(root->allChildren[i]);
+    }
+    
+    root->depth = max(finalDepths, root->numChildren);
     return root->depth + 1;
 }
 
@@ -147,6 +146,7 @@ Node* create_op(int op_type, Node** theChildren) {
         n->allChildren = (Node**)malloc(2 * sizeof(Node*));
         n->allChildren[0] = theChildren[0];
         n->allChildren[1] = theChildren[1];
+        n->numChildren = 2;
         break;
     case OP_SHIFTED_NOISE:
         n->generate_stack_recursive_from_op = three_args_op_gen;
@@ -154,6 +154,7 @@ Node* create_op(int op_type, Node** theChildren) {
         n->allChildren[0] = theChildren[0];
         n->allChildren[1] = theChildren[1];
         n->allChildren[2] = theChildren[2];
+        n->numChildren = 3;
         break;
     default:
         n->generate_stack_recursive_from_op = two_args_op_gen;
@@ -234,7 +235,7 @@ Node* larger_opt_test_case() {
     return root;
 }
 
-Node* larger_opt_test_case_three() {
+Node* larger_opt_test_case_shifted_noise1() {
     Node* add1 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
     Node* add2 = create_op(OP_SHIFTED_NOISE, (Node *[]){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11), create_leaf(OP_CONST, 10)});
     Node* add3 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 6), create_leaf(OP_CONST, 7)});
@@ -242,6 +243,21 @@ Node* larger_opt_test_case_three() {
     Node* add5 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 12), create_leaf(OP_CONST, 13)});
     Node* add6 = create_op(OP_ADD, (Node *[]){add4, add5});
     Node* root = create_op(OP_ADD, (Node *[]){add1, add6});
+    return root;
+}
+
+Node* larger_opt_test_case_shifted_noise2() {
+    Node* add0 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 1), create_leaf(OP_CONST, 2)});
+    Node* add3 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 2), create_leaf(OP_CONST, 3)});
+    Node* add4 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 3), create_leaf(OP_CONST, 4)});
+    Node* add1 = create_op(OP_ADD, (Node *[]){add3, add4});
+    Node* add7 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 4), create_leaf(OP_CONST, 5)});
+    Node* add8 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 5), create_leaf(OP_CONST, 6)});
+    Node* add5 = create_op(OP_ADD, (Node *[]){add7, add8});
+    Node* add6 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 6), create_leaf(OP_CONST, 7)});
+    Node* add2 = create_op(OP_ADD, (Node *[]){add5, add6});
+    
+    Node* root = create_op(OP_SHIFTED_NOISE, (Node *[]){add0, add1, add2});
     return root;
 }
 
@@ -291,9 +307,9 @@ int main() {
     register_op(OP_ADD, 1, 1);   // lowest priority, associative - ADD
     register_op(OP_MUL, 2, 1);   // higher priority, associative - MULT
     register_op(OP_MIN, 1, 1);   // lowest priority, associative - MIN
-    register_op(OP_SHIFTED_NOISE, 1, 0);
+    register_op(OP_SHIFTED_NOISE, 1, 0); // lowest priority, non associative - SHIFTED_NOISE
 
-    Node* root = tree_to_vine(larger_opt_test_case_three());
+    Node* root = tree_to_vine(larger_opt_test_case_shifted_noise2());
     EvalStack* theStack = generate_stack_wrapper(root);
     double resultOfOps = eval_stack(theStack);
 
