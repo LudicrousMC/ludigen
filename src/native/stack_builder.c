@@ -88,6 +88,11 @@ EvalStack* generate_stack_wrapper(Node* node) {
     return evalStack;
 }
 
+int one_arg_op_gen(EvalStack* evalStack, StackFrame* currentNode, Node* node, int regPos){
+    currentNode->arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos);
+    return regPos;
+}
+
 int two_args_op_gen(EvalStack* evalStack, StackFrame* currentNode, Node* node, int regPos) {
     if (node->allChildren[0] && node->allChildren[1]) {
         bool switchArgs = node->allChildren[0]->depth > node->allChildren[1]->depth;
@@ -156,6 +161,12 @@ Node* create_op(int op_type, Node** theChildren) {
         n->allChildren[2] = theChildren[2];
         n->numChildren = 3;
         break;
+    case OP_ABS:
+        n->generate_stack_recursive_from_op = one_arg_op_gen;
+        n->allChildren = (Node**)malloc(sizeof(Node*));
+        n->allChildren[0] = theChildren[0];
+        n->numChildren = 1;
+        break;
     default:
         n->generate_stack_recursive_from_op = two_args_op_gen;
         break;
@@ -181,7 +192,7 @@ int rotation_is_safe(Node* rest) {
     if (op_left->priority > op_rest->priority) return 0;
 
     // If same priority, the operator must be associative.
-    if (op_left->priority == op_rest->priority && !op_left->associative) return 0;
+    if (!op_left->associative) return 0;
 
     return 1;
 }
@@ -194,8 +205,28 @@ void rotate_right(Node* tail) {
     tail->allChildren[1]      = new_root;
 }
 
+int larger_arg_right(Node* root) {
+    if (root->numChildren != 2 || !lookup_op(root->operationType)->associative)
+        return root->numChildren;
+    
+    int left_max_num_children = larger_arg_right(root->allChildren[0]);
+    int right_max_num_children = larger_arg_right(root->allChildren[1]);
+
+     if (left_max_num_children > right_max_num_children){
+        Node* temp = root->allChildren[0];
+        root->allChildren[0] = root->allChildren[1];
+        root->allChildren[1] = temp;
+    }
+
+    if (left_max_num_children > right_max_num_children)
+        return left_max_num_children;
+    else
+        return right_max_num_children;
+}
+
 Node* tree_to_vine(Node* root) {
     // Prevent bad child dereferences
+    larger_arg_right(root);
     if (root->operationType == OP_CONST) return root;
     Node pseudo_root;
     pseudo_root.allChildren = (Node*[2]){0};
@@ -210,7 +241,16 @@ Node* tree_to_vine(Node* root) {
 
     while (rest != NULL) {
         // Prevent bad child dereferences
-        if (rest->operationType == OP_CONST) break;
+        if (rest->numChildren < 2) break;
+        
+        int should_rotate = rotation_is_safe(rest);
+
+        if (should_rotate) {
+            Node* left_child = rest->allChildren[0];
+            if (left_child && left_child->numChildren > rest->numChildren) {
+                should_rotate = 0;
+            }
+        }
         if (rotation_is_safe(rest)) {
             rotate_right(tail);
             rest = tail->allChildren[1];   // re-examine the newly promoted node
@@ -261,15 +301,17 @@ Node* larger_opt_test_case_shifted_noise2() {
     return root;
 }
 
-Node* non_associativity_test_case() {
-    Node* min1 = create_op(OP_MIN, (Node *[]){create_leaf(OP_CONST, 8), create_leaf(OP_CONST, 9)});
-    Node* min2 = create_op(OP_MIN, (Node *[]){create_leaf(OP_CONST, 10), create_leaf(OP_CONST, 11)});
-    Node* root = create_op(OP_MIN, (Node *[]){min1, min2});
+Node* one_arg_test_case() {
+    Node* abs1 = create_op(OP_ABS, (Node *[]){create_leaf(OP_CONST, -60)});
+    Node* abs2 = create_op(OP_ABS, (Node *[]){create_leaf(OP_CONST, -7)});
+    Node* root = create_op(OP_ADD, (Node *[]){abs1, abs2});
     return root;
 }
 
 double get_arg(EvalStack* s, double* registers, int offset, int arg_num) {
     int pos = s->op_stack[offset]->arg_indexes[arg_num];
+    if (pos < 0)
+        printf("%lf\n", s->const_args[abs(pos) - 1]);
     return pos < 0 ? s->const_args[abs(pos) - 1] : registers[pos];
 }
 
@@ -295,21 +337,25 @@ double eval_stack(EvalStack* finalStack) {
         case OP_SHIFTED_NOISE:
             regArray[finalStack->op_stack[i]->result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
             break;
+        case OP_ABS:
+            regArray[finalStack->op_stack[i]->result_index] = abs(get_arg(finalStack, regArray, i, 0));
         default:
             break;
         }
+        printf("%lf, %lf\n", regArray[0], regArray[1]);
     }
     printf("%lf\n", regArray[0]);
     return regArray[0];
 }
 
 int main() {
-    register_op(OP_ADD, 1, 1);   // lowest priority, associative - ADD
-    register_op(OP_MUL, 2, 1);   // higher priority, associative - MULT
+    register_op(OP_ADD, 2, 1);   // lowest priority, associative - ADD
+    register_op(OP_MUL, 3, 1);   // higher priority, associative - MULT
     register_op(OP_MIN, 1, 1);   // lowest priority, associative - MIN
-    register_op(OP_SHIFTED_NOISE, 1, 0); // lowest priority, non associative - SHIFTED_NOISE
+    register_op(OP_SHIFTED_NOISE, 0, 0); // lowest priority, non associative - SHIFTED_NOISE
+    register_op(OP_ABS, 0, 0); // lowest priority, non associative - ABS
 
-    Node* root = tree_to_vine(larger_opt_test_case_shifted_noise2());
+    Node* root = tree_to_vine(one_arg_test_case());
     EvalStack* theStack = generate_stack_wrapper(root);
     double resultOfOps = eval_stack(theStack);
 

@@ -48,11 +48,12 @@ Node* create_leaf(int op_type, double theData); // creates a leaf node (always c
 Node* create_op(int op_type, Node** theChildren); // creates an operation node with children
 int rotation_is_safe(Node* rest); // CLAUDE FUNCTION - determines whether or not a child is safe to rotate
 void rotate_right(Node* tail); // CLAUDE FUNCTION - rotates a child node
+int larger_arg_right(Node* root); // swap children with the largest args to the right
 Node* tree_to_vine(Node* root); // CLAUDE FUNCTION - "reassociton" optimization, which smashes a tree into a linked list
 Node* larger_opt_test_case(); // generates a test case for larger branch last optimization: 1 reg used
-Node* larger_opt_test_case_shifted_noise1(); // generates a test case for larger branch last optimization with shifted noise: 2 regs used
+Node* larger_opt_test_case_shifted_noise1(); // generates a test case for larger branch last optimization with shifted noise: 1 regs used
 Node* larger_opt_test_case_shifted_noise2(); // generates a test case for larger branch last optimization with shifted noise: 3 regs used
-Node* non_associativity_test_case(); // generates a simple test case for non associativity: 2 regs used
+Node* one_arg_test_case(); // generates a test case for one arg ops: 2 regs used
 double eval_stack(EvalStack* finalStack); // evaluates the stack given the inptus
 
 #define MAX_OPS 16
