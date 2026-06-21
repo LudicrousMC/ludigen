@@ -4,8 +4,9 @@
 #include "stack_builder.h"
 #include "test_cases.h"
 
-int op_count = 0;
+#define MAX_OPS 30
 OpInfo op_table[MAX_OPS];
+int    op_count;
 
 int max(int *arr, int n) {
     int m = arr[0];

@@ -51,8 +51,4 @@ int larger_arg_right(Node* root); // swap children with the largest args to the 
 Node* tree_to_vine(Node* root); // CLAUDE FUNCTION - "reassociton" optimization, which smashes a tree into a linked list
 double eval_stack(EvalStack* finalStack); // evaluates the stack given the inptus
 
-#define MAX_OPS 16
-extern OpInfo op_table[];
-extern int    op_count;
-
 #endif
