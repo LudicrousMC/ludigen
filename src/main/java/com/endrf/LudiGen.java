@@ -49,14 +49,17 @@ public class LudiGen implements ModInitializer {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
+        LudicrousEngineInstance instance = LudicrousEngine.createInstance();
         long end = System.nanoTime();
         LOGGER.info("time: " + (end - start));
         //LudicrousEngine.test();
         try {
-            LudicrousEngine.registerShader("eval");
+            instance.registerShader("eval");
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
+
+        //LOGGER.info("ptr " + instance);
 
         LOGGER.info("Hello Fabric world!");
 	}

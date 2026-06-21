@@ -1,6 +1,6 @@
 #include <stdbool.h>
-#include ".\include\op_types.h"
-#include ".\include\op_stack.h"
+#include "op_types.h"
+#include "op_stack.h"
 #include "stack_builder.h"
 #include "test_cases.h"
 
@@ -44,7 +44,7 @@ int preorder_traversal_depth_count(Node* root) {
     for (int i = 0; i < root->numChildren; i++) {
         if (root->allChildren[i]) finalDepths[i] = preorder_traversal_depth_count(root->allChildren[i]);
     }
-    
+
     root->depth = max(finalDepths, root->numChildren);
     return root->depth + 1;
 }
@@ -213,7 +213,7 @@ void rotate_right(Node* tail) {
 int larger_arg_right(Node* root) {
     if (root->numChildren != 2 || !lookup_op(root->operationType)->associative)
         return root->numChildren;
-    
+
     int left_max_num_children = larger_arg_right(root->allChildren[0]);
     int right_max_num_children = larger_arg_right(root->allChildren[1]);
 

@@ -32,19 +32,10 @@ public class LudicrousEngine {
         }
     }
 
-    public static void registerShader(String shader) throws IOException {
-        byte[] shaderBytes;
-        try (InputStream in = LudicrousEngine.class.getResourceAsStream("/compute/" + shader + ".spv")) {
-            if (in == null) throw new RuntimeException("Missing Compute Shader: " + shader + ".spv");
-            shaderBytes = in.readAllBytes();
-        }
-        ByteBuffer spirv = ByteBuffer.allocateDirect(shaderBytes.length);
-        spirv.order(ByteOrder.nativeOrder());
-        spirv.put(shaderBytes);
-        spirv.flip();
-        addShader(spirv);
+    private static native long newInstance();
+    public static LudicrousEngineInstance createInstance() {
+        return new LudicrousEngineInstance(newInstance());
     }
 
-    private static native void addShader(ByteBuffer spirv);
-    public static native void test();
+    native void loadShader(long instance, ByteBuffer spirv);
 }

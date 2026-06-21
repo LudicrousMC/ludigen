@@ -5,8 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include ".\include\op_types.h"
-#include ".\include\op_stack.h"
+#include "op_types.h"
+#include "op_stack.h"
 
 typedef struct OpInfo {
     int             op_type;
@@ -16,10 +16,10 @@ typedef struct OpInfo {
 
 typedef struct EvalStack {
     StackFrame** op_stack;
-    int op_stack_len;
-    int max_reg;
+    size_t op_stack_len;
+    size_t max_reg;
     double* const_args;
-    int const_args_len;
+    size_t const_args_len;
 } EvalStack;
 
 typedef enum { NODE_LEAF, NODE_OP } NodeType;

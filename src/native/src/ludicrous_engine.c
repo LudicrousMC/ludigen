@@ -1,15 +1,90 @@
 #include <vulkan/vulkan.h>
 #include <jni.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <op_stack.h>
-#include <op_types.h>
-#include <unistd.h>
+#include "ludicrous_engine.h"
+#include "op_stack.h"
+#include "op_types.h"
+#include "vulkan_util.h"
+#include "shader.h"
+#include "logger.h"
 
+#define VULKAN_VERSION VK_API_VERSION_1_0
 #define ELEMENT_COUNT 1024
 #define BUFFER_SIZE (ELEMENT_COUNT * sizeof(double))
+
+// Usage: InstanceState* state = create_instance(VK_QUEUE_COMPUTE_BIT);
+static InstanceState* create_instance(int queueFamilyType) {
+
+    // <-- Setup Vulkan Instance -->
+    // Create Vulkan instance with Vulkan API version 1.0
+    VkInstance instance;
+    VkResult err = vkCreateInstance(&(VkInstanceCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            .pApplicationInfo = &(VkApplicationInfo){
+                .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+                .apiVersion = VULKAN_VERSION,
+            }
+        }, NULL, &instance);
+    if (err != VK_SUCCESS)
+        return NULL;
+
+    // <-- Get Physical Device -->
+    // Query Physical devices (pick first)
+    VkPhysicalDevice physDev;
+    err = vkEnumeratePhysicalDevices(instance, &(uint32_t){1}, &physDev);
+    if (err < VK_SUCCESS)
+        return NULL;
+
+    // <-- Find Index of Queue Family Type in Physical Device -->
+    uint32_t qfCount;
+    // Get number of queue family properties
+    vkGetPhysicalDeviceQueueFamilyProperties(physDev, &qfCount, NULL);
+    // Allocate and set queue family props
+    VkQueueFamilyProperties *qfProps = malloc(qfCount * sizeof(VkQueueFamilyProperties));
+    vkGetPhysicalDeviceQueueFamilyProperties(physDev, &qfCount, qfProps);
+    // Find first occurrence of a Queue Family that supports specified family type
+    uint32_t queueFamilyIndex = UINT32_MAX;
+    for (uint32_t i = 0; i < qfCount; i++) {
+        if (qfProps[i].queueFlags & queueFamilyType) {
+            queueFamilyIndex = i;
+            break;
+        }
+    }
+    free(qfProps);
+
+    // <-- Create Logical Device and Queue with Queue Family -->
+    VkDevice device;
+    err = vkCreateDevice(physDev, &(VkDeviceCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            .queueCreateInfoCount = 1,
+            .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
+                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+                .queueFamilyIndex = queueFamilyIndex,
+                .queueCount = 1,
+                .pQueuePriorities = &(float){1.0f},
+            }
+        }, NULL, &device);
+    if (err != VK_SUCCESS)
+        return NULL;
+
+    // <-- Get Logical Device's Created Queue -->
+    VkQueue queue;
+    vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
+
+    InstanceState* state = (InstanceState*)malloc(sizeof(InstanceState));
+    *state = (InstanceState){
+        .vk_instance = instance,
+        .vk_phys_device = physDev,
+        .vk_queue_family_index = queueFamilyIndex,
+        .vk_device = device,
+        .vk_queue = queue,
+    };
+    return state;
+}
 
 typedef struct {
     StackFrame data[1024];
@@ -19,82 +94,11 @@ typedef struct {
     double data[512];
 } ConstArgsBuffer;
 
-static uint32_t findMemoryType(VkPhysicalDevice physDev, uint32_t typeBits,
-                                VkMemoryPropertyFlags props)
-{
-    VkPhysicalDeviceMemoryProperties memProps;
-    vkGetPhysicalDeviceMemoryProperties(physDev, &memProps);
-    for (uint32_t i = 0; i < memProps.memoryTypeCount; i++) {
-        if ((typeBits & (1 << i)) &&
-            (memProps.memoryTypes[i].propertyFlags & props) == props)
-        {
-            return i;
-        }
-    }
-    fprintf(stderr, "Could not find suitable GPU memory type\n");
-    exit(1);
+int main() {
+    return 0;
 }
 
-// Loads compiled spir-v shader from filepath
-static VkShaderModule createShaderModule(VkDevice device,
-                                          const char *path) {
-    FILE *f = fopen(path, "rb");
-    fseek(f, 0, SEEK_END);
-    size_t size = ftell(f);
-    rewind(f);
-    uint32_t *code = malloc(size);
-    fread(code, 1, size, f);
-    fclose(f);
-
-    VkShaderModuleCreateInfo ci = {
-        .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = size,
-        .pCode    = code,
-    };
-    VkShaderModule mod;
-    vkCreateShaderModule(device, &ci, NULL, &mod);
-    free(code);
-    return mod;
-}
-
-static VkShaderModule createShaderModuleFromBytes(VkDevice device, uint32_t* spirv, size_t size) {
-    VkShaderModuleCreateInfo ci = {
-        .sType    = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-        .codeSize = size,
-        .pCode    = spirv,
-    };
-    VkShaderModule mod;
-    vkCreateShaderModule(device, &ci, NULL, &mod);
-    //free(spirv);
-    return mod;
-}
-
-static void createBuffer(VkDevice device, VkPhysicalDevice physDev,
-                          VkDeviceSize size, VkBufferUsageFlags usage,
-                          VkMemoryPropertyFlags memProps,
-                          VkBuffer *buf, VkDeviceMemory *mem)
-{
-    VkBufferCreateInfo bci = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size  = size,
-        .usage = usage,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    vkCreateBuffer(device, &bci, NULL, buf);
-
-    VkMemoryRequirements req;
-    vkGetBufferMemoryRequirements(device, *buf, &req);
-
-    VkMemoryAllocateInfo ai = {
-        .sType           = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize  = req.size,
-        .memoryTypeIndex = findMemoryType(physDev, req.memoryTypeBits, memProps),
-    };
-    vkAllocateMemory(device, &ai, NULL, mem);
-    vkBindBufferMemory(device, *buf, *mem, 0);
-}
-
-int main(uint32_t* spirv, size_t size) {
+int vulkan_test(uint32_t* spirv, size_t size) {
     // Create Vulkan instance with Vulkan API version 1.0
     VkInstance instance;
     vkCreateInstance(&(VkInstanceCreateInfo){
@@ -106,9 +110,9 @@ int main(uint32_t* spirv, size_t size) {
         }, NULL, &instance);
 
     // Get Physical device (pick first)
-    uint32_t devCount = 1;
+    //uint32_t devCount = 1;
     VkPhysicalDevice physDev;
-    vkEnumeratePhysicalDevices(instance, &devCount, &physDev);
+    vkEnumeratePhysicalDevices(instance, &(uint32_t){1}, &physDev);
 
     // Find a compute queue family
     uint32_t qfCount;
@@ -260,7 +264,7 @@ int main(uint32_t* spirv, size_t size) {
     };
     vkUpdateDescriptorSets(device, 3, writes, 0, NULL);
 
-    // 11. Command buffer + dispatch
+    // Create Command buffer pool
     VkCommandPoolCreateInfo cpoolCI = {
         .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .queueFamilyIndex = queueFamilyIndex,
@@ -334,12 +338,20 @@ int main(uint32_t* spirv, size_t size) {
 }
 
 JNIEXPORT void JNICALL
-Java_com_endrf_LudicrousEngine_addShader(JNIEnv* env, jclass cls, jobject byteBuffer) {
+Java_com_endrf_LudicrousEngine_loadShader(JNIEnv* env, jclass cls, jlong instancePtr, jobject byteBuffer) {
+    InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
+    if (!state) return;
     void* bufferPtr = (*env)->GetDirectBufferAddress(env, byteBuffer);
-    if (bufferPtr == nullptr) {
-        return;
-    }
-    uint32_t* dataPtr = (uint32_t*)(bufferPtr);
+    if (!bufferPtr) return;
+    uint32_t* spirvDataPtr = (uint32_t*)(bufferPtr);
     size_t len = (size_t)(*env)->GetDirectBufferCapacity(env, byteBuffer);
-    main(dataPtr, len);
+    //vulkan_test(spirvDataPtr, len);
+    log_info("test 1");
+    create_shader(state, spirvDataPtr);
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_endrf_LudicrousEngine_newInstance(JNIEnv* env, jclass cls) {
+    InstanceState* state = create_instance(VK_QUEUE_COMPUTE_BIT);
+    return (jlong)(intptr_t)state;
 }
