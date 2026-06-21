@@ -5,8 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include ".\include\op_types.h"
-#include ".\include\op_stack.h"
+#include "op_types.h"
+#include "op_stack.h"
 #include "stack_builder.h"
 
 Node* larger_opt_test_case(); // generates a test case for larger branch last optimization: 1 reg used

@@ -1,6 +1,6 @@
 #include <stdbool.h>
-#include ".\include\op_types.h"
-#include ".\include\op_stack.h"
+#include "op_types.h"
+#include "op_stack.h"
 #include "test_cases.h"
 
 Node* larger_opt_test_case() {
