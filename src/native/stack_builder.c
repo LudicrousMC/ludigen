@@ -189,7 +189,7 @@ int rotation_is_safe(Node* rest) {
 
     // The left child must bind no more tightly than its parent.
     // If it binds MORE tightly, hoisting it would change precedence.
-    if (op_left->priority > op_rest->priority) return 0;
+    if (op_left->priority < op_rest->priority) return 0;
 
     // If same priority, the operator must be associative.
     if (!op_left->associative) return 0;
@@ -229,12 +229,12 @@ Node* tree_to_vine(Node* root) {
     larger_arg_right(root);
     if (root->operationType == OP_CONST) return root;
     Node pseudo_root;
-    pseudo_root.allChildren = (Node*[2]){0};
-    pseudo_root.allChildren[1]    = root;
-    pseudo_root.allChildren[0]     = NULL;
-    pseudo_root.type     = NODE_OP;
-    pseudo_root.operationType = 0;
-    pseudo_root.label    = 0;
+    pseudo_root.allChildren     = (Node*[2]){0};
+    pseudo_root.allChildren[1]  = root;
+    pseudo_root.allChildren[0]  = NULL;
+    pseudo_root.type            = NODE_OP;
+    pseudo_root.operationType   = 0;
+    pseudo_root.label           = 0;
 
     Node* tail = &pseudo_root;
     Node* rest = tail->allChildren[1];
@@ -242,7 +242,8 @@ Node* tree_to_vine(Node* root) {
     while (rest != NULL) {
         // Prevent bad child dereferences
         if (rest->numChildren < 2) break;
-        
+        // FIX ONE ARG OPS CAUSING SEG FAULT
+
         int should_rotate = rotation_is_safe(rest);
 
         if (should_rotate) {
@@ -308,6 +309,19 @@ Node* one_arg_test_case() {
     return root;
 }
 
+Node* min_and_max_test_case() { // FIX THIS, YOU ABSOLUTE MIFFLER, YOU ABSOSOLUTE BELLEND
+    Node* abs1 = create_op(OP_MAX, (Node *[]){create_leaf(OP_CONST, 60), create_leaf(OP_CONST, 6.7)});
+    Node* abs2 = create_op(OP_MIN, (Node *[]){create_leaf(OP_CONST, 66.7), create_leaf(OP_CONST, 7)});
+    Node* root = create_op(OP_ADD, (Node *[]){abs1, abs2});
+    return root;
+}
+
+Node* associativity_test_case() {
+    Node* add = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 1), create_leaf(OP_CONST, 2)});
+    Node* root = create_op(OP_MUL, (Node *[]){add, create_leaf(OP_CONST, 3)});
+    return root;
+}
+
 double get_arg(EvalStack* s, double* registers, int offset, int arg_num) {
     int pos = s->op_stack[offset]->arg_indexes[arg_num];
     if (pos < 0)
@@ -322,6 +336,8 @@ double eval_stack(EvalStack* finalStack) {
 
     for (int i = finalStack->op_stack_len - 1; i >= 0; i--)
     {
+        double arg1;
+        double arg2;
         switch (finalStack->op_stack[i]->op_type)
         {
         case OP_ADD:
@@ -331,9 +347,15 @@ double eval_stack(EvalStack* finalStack) {
             regArray[finalStack->op_stack[i]->result_index] = get_arg(finalStack, regArray, i, 0) * get_arg(finalStack, regArray, i, 1);
             break;
         case OP_MIN:
-            double arg1 = get_arg(finalStack, regArray, i, 0);
-            double arg2 = get_arg(finalStack, regArray, i, 1);
+            arg1 = get_arg(finalStack, regArray, i, 0);
+            arg2 = get_arg(finalStack, regArray, i, 1);
             regArray[finalStack->op_stack[i]->result_index] = arg1 < arg2 ? arg1 : arg2;
+            break;
+        case OP_MAX:
+            arg1 = get_arg(finalStack, regArray, i, 0);
+            arg2 = get_arg(finalStack, regArray, i, 1);
+            regArray[finalStack->op_stack[i]->result_index] = arg1 > arg2 ? arg1 : arg2;
+            break;
         case OP_SHIFTED_NOISE:
             regArray[finalStack->op_stack[i]->result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
             break;
@@ -349,13 +371,14 @@ double eval_stack(EvalStack* finalStack) {
 }
 
 int main() {
-    register_op(OP_ADD, 2, 1);   // lowest priority, associative - ADD
-    register_op(OP_MUL, 3, 1);   // higher priority, associative - MULT
-    register_op(OP_MIN, 1, 1);   // lowest priority, associative - MIN
-    register_op(OP_SHIFTED_NOISE, 0, 0); // lowest priority, non associative - SHIFTED_NOISE
-    register_op(OP_ABS, 0, 0); // lowest priority, non associative - ABS
+    register_op(OP_ADD, 3, 1);              // associative - ADD
+    register_op(OP_MUL, 4, 1);              // associative - MULT
+    register_op(OP_MIN, 1, 1);              // associative - MIN
+    register_op(OP_MAX, 1, 1);              // non associative - MAX
+    register_op(OP_SHIFTED_NOISE, 10, 0);   // non associative - SHIFTED_NOISE
+    register_op(OP_ABS, 0, 0);              // non associative - ABS
 
-    Node* root = tree_to_vine(one_arg_test_case());
+    Node* root = tree_to_vine(min_and_max_test_case());
     EvalStack* theStack = generate_stack_wrapper(root);
     double resultOfOps = eval_stack(theStack);
 
