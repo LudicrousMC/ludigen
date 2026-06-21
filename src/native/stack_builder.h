@@ -7,7 +7,6 @@
 #include <stdbool.h>
 #include ".\include\op_types.h"
 #include ".\include\op_stack.h"
-#include "stack_builder.h"
 
 typedef struct OpInfo {
     int             op_type;
@@ -50,16 +49,10 @@ int rotation_is_safe(Node* rest); // CLAUDE FUNCTION - determines whether or not
 void rotate_right(Node* tail); // CLAUDE FUNCTION - rotates a child node
 int larger_arg_right(Node* root); // swap children with the largest args to the right
 Node* tree_to_vine(Node* root); // CLAUDE FUNCTION - "reassociton" optimization, which smashes a tree into a linked list
-Node* larger_opt_test_case(); // generates a test case for larger branch last optimization: 1 reg used
-Node* larger_opt_test_case_shifted_noise1(); // generates a test case for larger branch last optimization with shifted noise: 1 regs used
-Node* larger_opt_test_case_shifted_noise2(); // generates a test case for larger branch last optimization with shifted noise: 3 regs used
-Node* one_arg_test_case(); // generates a test case for one arg ops: 2 regs used
-Node* min_and_max_test_case(); // generates a test case for min and max: 2 regs used
-Node* associativity_test_case(); // // generates a test case for associativity: 2 regs used
 double eval_stack(EvalStack* finalStack); // evaluates the stack given the inptus
 
 #define MAX_OPS 16
-OpInfo op_table[MAX_OPS];
-int    op_count = 0;
+extern OpInfo op_table[];
+extern int    op_count;
 
 #endif
