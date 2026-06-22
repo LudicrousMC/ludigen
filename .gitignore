@@ -41,3 +41,4 @@ replay_*.log
 
 src/main/resources/native_src
 src/native/stack_builder.exe
+src/native/test_cases.exe
