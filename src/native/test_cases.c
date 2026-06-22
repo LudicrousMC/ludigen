@@ -59,3 +59,42 @@ Node* associativity_test_case() {
     Node* root = create_op(OP_MUL, (Node *[]){add, create_leaf(OP_CONST, 3)});
     return root;
 }
+
+Node* square_test_case() {
+    Node* add = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 60), create_leaf(OP_CONST, 7)});
+    Node* mult = create_op(OP_MUL, (Node *[]){create_leaf(OP_CONST, 67), create_leaf(OP_CONST, 1)});
+    Node* squareAdd = create_op(OP_SQUARE, (Node *[]){add});
+    Node* squareMult = create_op(OP_SQUARE, (Node *[]){mult});
+    Node* root = create_op(OP_MUL, (Node *[]){squareAdd, squareMult});
+    return root;
+}
+
+Node* cube_test_case() {
+    Node* add = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, 60), create_leaf(OP_CONST, 7)});
+    Node* mult = create_op(OP_MUL, (Node *[]){create_leaf(OP_CONST, 67), create_leaf(OP_CONST, 1)});
+    Node* squareAdd = create_op(OP_CUBE, (Node *[]){add});
+    Node* squareMult = create_op(OP_CUBE, (Node *[]){mult});
+    Node* root = create_op(OP_MUL, (Node *[]){squareAdd, squareMult});
+    return root;
+}
+
+Node* half_quarter_test_case() {
+    Node* add = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, -33.5), create_leaf(OP_CONST, -33.5)});
+    Node* mult = create_op(OP_MUL, (Node *[]){create_leaf(OP_CONST, 67), create_leaf(OP_CONST, -2)});
+    Node* squareAdd = create_op(OP_HALF_NEGATIVE, (Node *[]){add});
+    Node* squareMult = create_op(OP_QUARTER_NEGATIVE, (Node *[]){mult});
+    Node* root = create_op(OP_ADD, (Node *[]){squareAdd, squareMult});
+    return root;
+}
+
+Node* inverse_test_case() {
+    return create_op(OP_INVERT, (Node *[]){create_leaf(OP_CONST, 0.0149253731343283582089552238806)});
+}
+
+Node* squeeze_test_case() {
+    return create_op(OP_SQUEEZE, (Node *[]){create_leaf(OP_CONST, 67)});
+}
+
+Node* clamp_test_case() {
+    return create_op(OP_CLAMP, (Node *[]){create_leaf(OP_CONST, 67)});
+}

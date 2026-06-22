@@ -1,6 +1,7 @@
 #ifndef STACK_BUILDER_H
 #define STACK_BUILDER_H
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

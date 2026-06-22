@@ -167,6 +167,13 @@ Node* create_op(int op_type, Node** theChildren) {
         n->numChildren = 3;
         break;
     case OP_ABS:
+    case OP_SQUARE:
+    case OP_CUBE:
+    case OP_HALF_NEGATIVE:
+    case OP_QUARTER_NEGATIVE:
+    case OP_INVERT:
+    case OP_SQUEEZE:
+    case OP_CLAMP:
         n->generate_stack_recursive_from_op = one_arg_op_gen;
         n->allChildren = (Node**)malloc(sizeof(Node*));
         n->allChildren[0] = theChildren[0];
@@ -304,11 +311,38 @@ double eval_stack(EvalStack* finalStack) {
             arg2 = get_arg(finalStack, regArray, i, 1);
             regArray[finalStack->op_stack[i]->result_index] = arg1 > arg2 ? arg1 : arg2;
             break;
+        case OP_ABS:
+            regArray[finalStack->op_stack[i]->result_index] = abs(get_arg(finalStack, regArray, i, 0));
+            break;
+        case OP_SQUARE:
+            arg1 = get_arg(finalStack, regArray, i, 0);
+            regArray[finalStack->op_stack[i]->result_index] = arg1 * arg1;
+            break;
+        case OP_CUBE:
+            arg1 = get_arg(finalStack, regArray, i, 0);
+            regArray[finalStack->op_stack[i]->result_index] = arg1 * arg1 * arg1;
+            break;
+        case OP_HALF_NEGATIVE:
+            arg1 = get_arg(finalStack, regArray, i, 0);
+            regArray[finalStack->op_stack[i]->result_index] = arg1 < 0.0 ? arg1 * 0.5 : arg1;
+            break;
+        case OP_INVERT:
+            regArray[finalStack->op_stack[i]->result_index] = 1.0 / get_arg(finalStack, regArray, i, 0);
+            break;
+        case OP_QUARTER_NEGATIVE:
+            arg1 = get_arg(finalStack, regArray, i, 0);
+            regArray[finalStack->op_stack[i]->result_index] = arg1 < 0.0 ? arg1 * 0.25 : arg1;
+            break;
+        case OP_SQUEEZE:
+            double clamped_val = fmin(fmax(get_arg(finalStack, regArray, i, 0), -1.0), 1.0);
+            regArray[finalStack->op_stack[i]->result_index] = (clamped_val / 2.0) - ((clamped_val * clamped_val * clamped_val) / 24.0);
+            break;
+        case OP_CLAMP:
+            regArray[finalStack->op_stack[i]->result_index] = fmin(fmax(get_arg(finalStack, regArray, i, 0), -1.0), 1.0);
+            break;
         case OP_SHIFTED_NOISE:
             regArray[finalStack->op_stack[i]->result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
             break;
-        case OP_ABS:
-            regArray[finalStack->op_stack[i]->result_index] = abs(get_arg(finalStack, regArray, i, 0));
         default:
             break;
         }
@@ -319,14 +353,21 @@ double eval_stack(EvalStack* finalStack) {
 }
 
 int main() {
-    register_op(OP_ADD, 3, 1);              // associative - ADD
-    register_op(OP_MUL, 4, 1);              // associative - MULT
-    register_op(OP_MIN, 1, 1);              // associative - MIN
-    register_op(OP_MAX, 1, 1);              // non associative - MAX
-    register_op(OP_SHIFTED_NOISE, 10, 0);   // non associative - SHIFTED_NOISE
-    register_op(OP_ABS, 0, 0);              // non associative - ABS
+    register_op(OP_ADD, 2, 1);              // associative
+    register_op(OP_MUL, 3, 1);              // associative
+    register_op(OP_MIN, 1, 1);              // associative
+    register_op(OP_MAX, 1, 1);              // associative
+    register_op(OP_ABS, 0, 0);              // non associative
+    register_op(OP_SQUARE, 0, 0);           // non associative
+    register_op(OP_CUBE, 0,0);              // non associative
+    register_op(OP_HALF_NEGATIVE, 0, 0);    // non associative
+    register_op(OP_QUARTER_NEGATIVE, 0, 0); // non associative
+    register_op(OP_INVERT, 0, 0);           // non associative
+    register_op(OP_SQUEEZE, 0, 0);          // non associative
+    register_op(OP_CLAMP, 0, 0);            // non associative
+    register_op(OP_SHIFTED_NOISE, 10, 0);   // non associative - FIX THIS, YOU DAMNNED TWAT
 
-    Node* root = tree_to_vine(min_and_max_test_case());
+    Node* root = tree_to_vine(clamp_test_case());
     EvalStack* theStack = generate_stack_wrapper(root);
     double resultOfOps = eval_stack(theStack);
 
