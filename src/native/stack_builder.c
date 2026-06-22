@@ -279,14 +279,14 @@ Node* tree_to_vine(Node* root) {
 
 double get_arg(EvalStack* s, double* registers, int offset, int arg_num) {
     int pos = s->op_stack[offset]->arg_indexes[arg_num];
-    if (pos < 0)
-        printf("%lf\n", s->const_args[abs(pos) - 1]);
+    /*if (pos < 0)
+        printf("%lf\n", s->const_args[abs(pos) - 1]);*/
     return pos < 0 ? s->const_args[abs(pos) - 1] : registers[pos];
 }
 
 double eval_stack(EvalStack* finalStack) {
 
-    printf("Registers Used: %d\n", finalStack->max_reg+1);
+    //printf("Registers Used: %d\n", finalStack->max_reg+1);
     double* regArray = (double*)malloc(sizeof(double) * (finalStack->max_reg+1));
 
     for (int i = finalStack->op_stack_len - 1; i >= 0; i--)
@@ -346,9 +346,9 @@ double eval_stack(EvalStack* finalStack) {
         default:
             break;
         }
-        printf("%lf, %lf\n", regArray[0], regArray[1]);
+        //printf("%lf, %lf\n", regArray[0], regArray[1]);
     }
-    printf("%lf\n", regArray[0]);
+    //printf("%lf\n", regArray[0]);
     return regArray[0];
 }
 
@@ -367,9 +367,10 @@ int main() {
     register_op(OP_CLAMP, 0, 0);            // non associative
     register_op(OP_SHIFTED_NOISE, 10, 0);   // non associative - FIX THIS, YOU DAMNNED TWAT
 
-    Node* root = tree_to_vine(clamp_test_case());
+    /*Node* root = tree_to_vine(clamp_test_case());
     EvalStack* theStack = generate_stack_wrapper(root);
-    double resultOfOps = eval_stack(theStack);
+    double resultOfOps = eval_stack(theStack);*/
+    run_all_test_cases();
 
     return 0;
 }
