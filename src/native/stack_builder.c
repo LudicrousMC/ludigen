@@ -52,8 +52,14 @@ int preorder_traversal_depth_count(Node* root) {
 // Finds allocation requirements of op_stack and const_args for EvalStack
 EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
     // Return requirements for 1 length in const_args if this is a constant node
-    if (root->operationType == OP_CONST) {
+    switch (root->operationType)
+    {
+    case OP_CONST:
         return (EvalStackAllocReqs){0,1};
+    case OP_Y_CLAMPED_GRAD:
+        return (EvalStackAllocReqs){1,4};
+    default:
+        break;
     }
 
     // If this node is an actual operation, reserve 1 length in op_stack and increment with children
@@ -73,7 +79,7 @@ EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
 int generate_stack_recursive(EvalStack* evalStack, Node* node, int regPos) {
     if (node->operationType == OP_CONST) {
         // Add value to const_args and increment counter
-        evalStack->const_args[evalStack->const_args_len++] = node->value;
+        evalStack->const_args[evalStack->const_args_len++] = node->values[0];
         return -evalStack->const_args_len;
     }
     // Keep running count of maximum register for later use
@@ -107,6 +113,12 @@ EvalStack* generate_stack_wrapper(Node* node) {
     generate_stack_recursive(evalStack, node, 0);
 
     return evalStack;
+}
+
+int y_clamp_op_gen (EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    for (int i = 0; i < 4; i++)
+        evalStack->const_args[evalStack->const_args_len++] = node->values[i];
+    return regPos;
 }
 
 int one_arg_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
@@ -147,13 +159,25 @@ int three_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node
     return regPos;
 }
 
-Node* create_leaf(int op_type, double theData) {
+Node* create_leaf(int op_type, double* theData) {
     Node* n    = (Node*)malloc(sizeof(Node));
     n->type    = NODE_LEAF;
     n->operationType = op_type;
     n->depth = 0;
     n->label   = 0;
-    n->value = theData;
+    switch (op_type)
+    {
+    case OP_CONST:
+        n->values = (double*)malloc(sizeof(double));
+        memcpy(n->values, theData, sizeof(double));
+        break;
+    case OP_Y_CLAMPED_GRAD:
+        n->values = (double*)malloc(4 * sizeof(double));
+        memcpy(n->values, theData, 4 * sizeof(double));
+        break;
+    default:
+        break;
+    }
     n->numChildren = 0;
     return n;
 }
@@ -197,6 +221,10 @@ Node* create_op(int op_type, Node** theChildren) {
         n->allChildren = (Node**)malloc(sizeof(Node*));
         n->allChildren[0] = theChildren[0];
         n->numChildren = 1;
+        break;
+    case OP_Y_CLAMPED_GRAD:
+        n->generate_stack_recursive_from_op = y_clamp_op_gen;
+        n->numChildren = 0;
         break;
     default:
         n->generate_stack_recursive_from_op = two_args_op_gen;
@@ -300,7 +328,7 @@ double get_arg(EvalStack* s, double* registers, int offset, int arg_num) {
     return pos < 0 ? s->const_args[abs(pos) - 1] : registers[pos];
 }
 
-double eval_stack(EvalStack* finalStack) {
+double eval_stack(EvalStack* finalStack, double x, double y, double z) {
 
     // printf("Registers Used: %d\n", finalStack->max_reg+1);
     double regArray[finalStack->max_reg+1];
@@ -328,7 +356,7 @@ double eval_stack(EvalStack* finalStack) {
             regArray[finalStack->op_stack[i].result_index] = arg1 > arg2 ? arg1 : arg2;
             break;
         case OP_ABS:
-            regArray[finalStack->op_stack[i].result_index] = abs(get_arg(finalStack, regArray, i, 0));
+            regArray[finalStack->op_stack[i].result_index] = fabs(get_arg(finalStack, regArray, i, 0));
             break;
         case OP_SQUARE:
             arg1 = get_arg(finalStack, regArray, i, 0);
@@ -356,6 +384,9 @@ double eval_stack(EvalStack* finalStack) {
         case OP_CLAMP:
             regArray[finalStack->op_stack[i].result_index] = fmin(fmax(get_arg(finalStack, regArray, i, 0), -1.0), 1.0);
             break;
+        case OP_Y_CLAMPED_GRAD:
+            regArray[finalStack->op_stack[i].result_index] = fmin(fmax(get_arg(finalStack, regArray, i, 0), -1.0), 1.0);
+            break;
         case OP_SHIFTED_NOISE:
             regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
             break;
@@ -381,7 +412,8 @@ int main() {
     register_op(OP_INVERT, 0, 0);           // non associative
     register_op(OP_SQUEEZE, 0, 0);          // non associative
     register_op(OP_CLAMP, 0, 0);            // non associative
-    register_op(OP_SHIFTED_NOISE, 10, 0);   // non associative - FIX THIS, YOU DAMNNED TWAT
+    register_op(OP_Y_CLAMPED_GRAD, 0, 0);   // non associative
+    register_op(OP_SHIFTED_NOISE, 10, 0);   // non associative - FIX THIS EVALUATION, YOU DAMNNED TWAT
 
     // Node* root = tree_to_vine(associativity_test_case());
     // EvalStack* theStack = generate_stack_wrapper(root);

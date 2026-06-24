@@ -37,7 +37,7 @@ typedef struct Node {
     int             label;
     int             depth;
     int             numChildren;
-    double          value;
+    double*         values;
     struct Node**   allChildren;
 } Node;
 
@@ -51,12 +51,12 @@ EvalStack* generate_stack_wrapper(Node* node); // wrapper function to generate e
 int one_arg_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for a one arg operation
 int two_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for a two arg operation
 int three_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for a three arg operation
-Node* create_leaf(int op_type, double theData); // creates a leaf node (always constant) with data
+Node* create_leaf(int op_type, double* theData); // creates a leaf node with data
 Node* create_op(int op_type, Node** theChildren); // creates an operation node with children
 int rotation_is_safe(Node* rest); // CLAUDE FUNCTION - determines whether or not a child is safe to rotate
 void rotate_right(Node* tail); // CLAUDE FUNCTION - rotates a child node
 int larger_arg_right(Node* root); // swap children with the largest args to the right
 Node* tree_to_vine(Node* root); // CLAUDE FUNCTION - "reassociation" optimization, which smashes a tree into a linked list
-double eval_stack(EvalStack* finalStack); // evaluates the stack given the inputs
+double eval_stack(EvalStack* finalStack, double x, double y, double z); // evaluates the stack given the inputs and coordinates
 
 #endif
