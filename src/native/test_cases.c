@@ -1,3 +1,7 @@
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdbool.h>
 #include "op_types.h"
 #include "op_stack.h"
@@ -100,6 +104,10 @@ Node* clamp_test_case() {
     return create_op(OP_CLAMP, (Node *[]){create_leaf(OP_CONST, (double []){67})}, NULL);
 }
 
+Node* y_clamped_grad_test_case() {
+    return create_leaf(OP_Y_CLAMPED_GRAD, (double []){-10.0, 10.0, 66.0, 68.0});
+}
+
 #define EPSILON 0.0000000000001
 
 int test_full_algo(Node* root, char* case_name, int case_num, int expected_regs, double expected_result) {
@@ -107,7 +115,7 @@ int test_full_algo(Node* root, char* case_name, int case_num, int expected_regs,
     printf("Test Case %d: %s\n", case_num, case_name);
     root = tree_to_vine(root);
     EvalStack* theStack = generate_stack_wrapper(root);
-    double resultOfOps = eval_stack(theStack, 0, 0, 0); // CHANGE COORDS FOR LATER TESTING, YOU FUCKING ASSHAT
+    double resultOfOps = evaluate_stack(theStack, 0, 0, 0); // CHANGE COORDS FOR LATER TESTING, YOU FUCKING ASSHAT
     char exp_regs[sizeof(int)*8+1];
     sprintf(exp_regs, ", Expected: %d\n", expected_regs);
     printf("Registers Used: %d%s", theStack->max_reg+1, expected_regs != -1 ? exp_regs : "\n");
@@ -137,6 +145,7 @@ void run_all_test_cases() {
         { .name = "Inverse", .fn = inverse_test_case, .exp_regs = 1, .exp_result = 67.0 },
         { .name = "Squeeze", .fn = squeeze_test_case, .exp_regs = 1, .exp_result = 0.458333333333333333333333333333 },
         { .name = "Clamp", .fn = clamp_test_case, .exp_regs = 1, .exp_result = 1.0 },
+        { .name = "Y Clamped Gradient", .fn = y_clamped_grad_test_case, .exp_regs = 1, .exp_result = 67.0 },
     };
     bool consider_regs = true;
     int len = sizeof(cases) / sizeof(cases[0]);

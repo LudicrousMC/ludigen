@@ -1,10 +1,6 @@
 #ifndef TEST_CASES_H
 #define TEST_CASES_H
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdbool.h>
 #include "op_types.h"
 #include "op_stack.h"
 #include "stack_builder.h"
@@ -28,6 +24,7 @@ Node* half_quarter_test_case(); // generates a test case for half negative and q
 Node* inverse_test_case(); // generates a test case for inverse: 1 reg used
 Node* squeeze_test_case(); // generates a test case for squeeze: 1 reg used
 Node* clamp_test_case(); // generates a test case for clamp: 1 reg used
+Node* y_clamped_grad_test_case(); // generates a test case for y clamped gradient: 1 reg used
 int test_full_algo(Node* root, char* case_name, int case_num, int expected_regs, double expected_result);
 void run_all_test_cases();
 

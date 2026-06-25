@@ -1,8 +1,13 @@
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <stdbool.h>
 #include "op_types.h"
 #include "op_stack.h"
 #include "stack_builder.h"
 #include "test_cases.h"
+#include "util.h"
 
 #define MAX_OPS 30
 OpInfo op_table[MAX_OPS];
@@ -115,7 +120,8 @@ EvalStack* generate_stack_wrapper(Node* node) {
     return evalStack;
 }
 
-int y_clamp_op_gen (EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+int y_clamp_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
     for (int i = 0; i < 4; i++)
         evalStack->const_args[evalStack->const_args_len++] = node->values[i];
     return regPos;
@@ -326,7 +332,11 @@ double get_arg(EvalStack* s, double* registers, int offset, int arg_num) {
     return pos < 0 ? s->const_args[abs(pos) - 1] : registers[pos];
 }
 
-double eval_stack(EvalStack* finalStack, double x, double y, double z) {
+double get_const(EvalStack* s, int offset, int arg_num) {
+    return s->const_args[s->op_stack[offset].const_index + arg_num];
+}
+
+double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
 
     // printf("Registers Used: %d\n", finalStack->max_reg+1);
     double regArray[finalStack->max_reg+1];
@@ -383,7 +393,11 @@ double eval_stack(EvalStack* finalStack, double x, double y, double z) {
             regArray[finalStack->op_stack[i].result_index] = fmin(fmax(get_arg(finalStack, regArray, i, 0), -1.0), 1.0);
             break;
         case OP_Y_CLAMPED_GRAD:
-            regArray[finalStack->op_stack[i].result_index] = fmin(fmax(get_arg(finalStack, regArray, i, 0), -1.0), 1.0);
+            double fromY = get_const(finalStack, i, 0);
+            double toY = get_const(finalStack, i, 1);
+            double fromValue = get_const(finalStack, i, 2);
+            double toValue = get_const(finalStack, i, 3);
+            regArray[finalStack->op_stack[i].result_index] = clamped_map(y, fromY, toY, fromValue, toValue);
             break;
         case OP_SHIFTED_NOISE:
             regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
@@ -415,7 +429,7 @@ int main() {
 
     // Node* root = tree_to_vine(associativity_test_case());
     // EvalStack* theStack = generate_stack_wrapper(root);
-    // double resultOfOps = eval_stack(theStack);
+    // double resultOfOps = evaluate_stack(theStack);
     run_all_test_cases();
 
     return 0;

@@ -1,14 +1,6 @@
 #ifndef STACK_BUILDER_H
 #define STACK_BUILDER_H
 
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdbool.h>
-#include "op_types.h"
-#include "op_stack.h"
-
 typedef struct OpInfo {
     int             op_type;
     int             priority;      // higher number = tighter binding
@@ -57,6 +49,8 @@ int rotation_is_safe(Node* rest); // CLAUDE FUNCTION - determines whether or not
 void rotate_right(Node* tail); // CLAUDE FUNCTION - rotates a child node
 int larger_arg_right(Node* root); // swap children with the largest args to the right
 Node* tree_to_vine(Node* root); // CLAUDE FUNCTION - "reassociation" optimization, which smashes a tree into a linked list
-double eval_stack(EvalStack* finalStack, double x, double y, double z); // evaluates the stack given the inputs and coordinates
+double get_arg(EvalStack* s, double* registers, int offset, int arg_num); // gets argument from const args or register (dependign on op children)
+double get_const(EvalStack* s, int offset, int arg_num); // gets an op's consant args
+double evaluate_stack(EvalStack* finalStack, double x, double y, double z); // evaluates the stack given the inputs and coordinates
 
 #endif
