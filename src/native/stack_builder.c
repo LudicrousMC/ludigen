@@ -172,6 +172,8 @@ Node* create_leaf(int op_type, double* theData) {
         memcpy(n->values, theData, sizeof(double));
         break;
     case OP_Y_CLAMPED_GRAD:
+        n->generate_stack_recursive_from_op = y_clamp_op_gen;
+        n->numChildren = 0;
         n->values = (double*)malloc(4 * sizeof(double));
         memcpy(n->values, theData, 4 * sizeof(double));
         break;
@@ -182,7 +184,7 @@ Node* create_leaf(int op_type, double* theData) {
     return n;
 }
 
-Node* create_op(int op_type, Node** theChildren) {
+Node* create_op(int op_type, Node** theChildren, double* theData) {
     Node* n    = (Node*)malloc(sizeof(Node));
     n->type    = NODE_OP;
     n->operationType = op_type;
@@ -221,11 +223,7 @@ Node* create_op(int op_type, Node** theChildren) {
         n->allChildren = (Node**)malloc(sizeof(Node*));
         n->allChildren[0] = theChildren[0];
         n->numChildren = 1;
-        break;
-    case OP_Y_CLAMPED_GRAD:
-        n->generate_stack_recursive_from_op = y_clamp_op_gen;
-        n->numChildren = 0;
-        break;
+        break;        
     default:
         n->generate_stack_recursive_from_op = two_args_op_gen;
         break;
