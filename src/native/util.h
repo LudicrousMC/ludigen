@@ -10,5 +10,6 @@ double lerp(double pos, double x, double y); // linear interpolation
 double inverse_lerp(double pos, double x, double y); // inverse linear interpolation
 double clamped_map(double pos1, double x, double y, double val1, double val2); // translates a value from one range to another
 double linear_ext_if_non_zero(double p_deriv, double p_loc, double x, double value); // linearly extends if derivative is non-zero
+double spline_compute(double x_loc, double x_deriv, double x_val, double y_loc, double y_deriv, double y_val, double coord); // interpolates between two spline points
 
 #endif

@@ -81,6 +81,10 @@ EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
         } else if (root->values[0] == OP_SUBTYPE_SPLINE)
             reqs.const_args_len += 2; // number of points and stack return index constant
         break;
+    case OP_FIND_TOP_SURFACE:
+        reqs.const_args_len += 2;
+        reqs.op_stack_len++;
+        break;
     default:
         break;
     }
@@ -199,6 +203,20 @@ int y_clamp_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, i
     return regPos;
 }
 
+int find_top_surface_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
+    for (int i = 0; i < 2; i++)
+        evalStack->const_args[evalStack->const_args_len++] = node->values[i];
+    
+    if (node->allChildren[0] && node->allChildren[1]) {
+        evalStack->op_stack[currentFrameIndex].arg_indexes[1] = generate_stack_recursive(evalStack, node->allChildren[1], regPos);
+        evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){.op_type = OP_FIND_TOP_SURFACE, .const_index = -(currentFrameIndex + 1)};
+        evalStack->op_stack[currentFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos + 1);
+    }
+    return regPos;
+}
+
+
 int one_arg_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
     if (node->allChildren[0]) {
         evalStack->op_stack[currentFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos);
@@ -290,6 +308,16 @@ Node* create_op(int op_type, Node** theChildren, double* theData) {
         n->allChildren[0] = theChildren[0];
         n->allChildren[1] = theChildren[1];
         n->numChildren = 2;
+        break;
+    case OP_FIND_TOP_SURFACE:
+        n->generate_stack_recursive_from_op = two_args_op_gen;
+        n->allChildren = (Node**)malloc(2 * sizeof(Node*));
+        n->allChildren[0] = theChildren[0];
+        n->allChildren[1] = theChildren[1];
+        n->numChildren = 2;
+        n->values = (double*)malloc(2 * sizeof(double));
+        n->values[0] = theData[0];
+        n->values[1] = theData[1];
         break;
     case OP_SHIFTED_NOISE:
         n->generate_stack_recursive_from_op = three_args_op_gen;
@@ -518,6 +546,24 @@ double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
             double toValue = get_const(finalStack, i, 3);
             regArray[finalStack->op_stack[i].result_index] = clamped_map(y, fromY, toY, fromValue, toValue);
             break;
+        case OP_FIND_TOP_SURFACE:
+            if (finalStack->op_stack[i].const_index < 0)
+            {
+                int mainStackFrameIndex = abs(finalStack->op_stack[i].const_index) - 1;
+                double cellHeight = get_const(finalStack, mainStackFrameIndex, 0);
+                double topY = get_arg(finalStack, regArray, mainStackFrameIndex, 0);
+                double lowerBound = get_const(finalStack, mainStackFrameIndex, 1);
+                if (topY <= lowerBound)
+                {
+                    regArray[finalStack->op_stack[i].result_index] = lowerBound;
+                    i = mainStackFrameIndex;
+                }
+                else
+                {
+                    regArray[finalStack->op_stack[i].result_index];
+                }
+                break;
+            }
         case OP_SHIFTED_NOISE:
             regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
             break;
@@ -583,7 +629,7 @@ double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
                     }
                 } else {
                     // If between points, interpolate (double point)
-                    int point1_index = get_const(finalStack, i, (num_points * 2) + 1 + point_index)
+                    int point1_index = get_const(finalStack, i, (num_points * 2) + 1 + point_index);
                     int point2_index = get_const(finalStack, i, (num_points * 2) + 2 + point_index);
                     // If both points are constants (negative), compute spline and go to return frame,
                     // else if next point is constant (negative), save result in register and start on first point
@@ -631,7 +677,7 @@ double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
         default:
             break;
         }
-        printf("%lf, %lf %lf %lf\n", regArray[0], regArray[1], regArray[2], regArray[3]);
+        // printf("%lf, %lf %lf %lf\n", regArray[0], regArray[1], regArray[2], regArray[3]);
     }
     // printf("%lf\n", regArray[0]);
     return regArray[0];
