@@ -36,4 +36,7 @@
 #define OP_OLD_BLENDED_NOISE    30
 #define OP_END_ISLANDS          31
 
+#define OP_SUBTYPE_SPLINE       0
+#define OP_SUBTYPE_SPLINE_POINT 1
+
 #endif

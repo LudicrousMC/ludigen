@@ -1,6 +1,8 @@
 #ifndef STACK_BUILDER_H
 #define STACK_BUILDER_H
 
+#include <stddef.h>
+
 typedef struct OpInfo {
     int             op_type;
     int             priority;      // higher number = tighter binding

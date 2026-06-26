@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include "op_types.h"
 #include "op_stack.h"
 #include "stack_builder.h"
@@ -43,7 +44,7 @@ OpInfo* lookup_op(int op_type) {
 }
 
 int preorder_traversal_depth_count(Node* root) {
-    if (root->operationType == OP_CONST) return 0;
+    if (root->numChildren == 0) return 0;
     int finalDepths[root->numChildren];
 
     for (int i = 0; i < root->numChildren; i++) {
@@ -56,7 +57,7 @@ int preorder_traversal_depth_count(Node* root) {
 
 // Finds allocation requirements of op_stack and const_args for EvalStack
 EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
-    // Return requirements for 1 length in const_args if this is a constant node
+    // Return requirements for leaf nodes that don't have children
     switch (root->operationType)
     {
     case OP_CONST:
@@ -67,9 +68,23 @@ EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
         break;
     }
 
-    // If this node is an actual operation, reserve 1 length in op_stack and increment with children
+    // If this node is an actual operation, reserve 1 length in op_stack
     EvalStackAllocReqs reqs = {1,0};
-    // Add requirements of all children to reqs
+    // Account for ops that have extra constants
+    switch (root->operationType)
+    {
+    case OP_SPLINE:
+        if (root->values[0] == OP_SUBTYPE_SPLINE_POINT) {
+            if (root->allChildren[0]->operationType == OP_CONST)
+                return (EvalStackAllocReqs){0,3}; // Omit spline point op if it holds a constant value
+            reqs.const_args_len += 3; // derivative, location, and stack index constants
+        } else if (root->values[0] == OP_SUBTYPE_SPLINE)
+            reqs.const_args_len += 2; // number of points and stack return index constant
+        break;
+    default:
+        break;
+    }
+    // Add requirements of all children to current op reqs
     for (int i = 0; i < root->numChildren; i++) {
         if (root->allChildren[i]) {
             EvalStackAllocReqs childReqs = preorder_traversal_alloc_reqs(root->allChildren[i]);
@@ -118,6 +133,52 @@ EvalStack* generate_stack_wrapper(Node* node) {
     generate_stack_recursive(evalStack, node, 0);
 
     return evalStack;
+}
+
+int spline_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    // Assume current frame is for first spline point
+    int num_points = node->values[1];
+    // Constants Length is (number of points * (location, deriv, stack index)) + num_points constant
+    int num_constants = (num_points * 3) + 1;
+    double constants[num_constants] = {};
+    constants[0] = num_points;
+
+    for (int i = 0, j = 1; i < num_points; i++, j++) {
+        Node* point = node->allChildren[i];
+        constants[j] = point->values[1]; // Add point location
+        constants[j + num_points] = point->values[2]; // Add point derivative
+        size_t pointFrameIndex = evalStack->op_stack_len - 1; // Save reference to current point StackFrame
+        int index = generate_stack_recursive(evalStack, point->allChildren[0], regPos + 3); // Generate point value stack
+
+        // If point value is constant, store index as negative const_args index, else store op_stack index for evaluating point
+        if (index < 0) {
+            // Undo spline add
+            evalStack->op_stack_len--;
+            constants[j + (num_points*2)] = (double)index;
+        } else {
+            constants[j + (num_points*2)] = evalStack->op_stack_len;
+            evalStack->op_stack[pointFrameIndex].arg_indexes[0] = index;
+            // Store return frame index as negative const_index
+            evalStack->op_stack[pointFrameIndex].const_index = -currentFrameIndex;
+        }
+
+        evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){ .op_type = point->operationType, .result_index = regPos };
+    }
+
+
+
+    // Add constants to const_args stack
+    evalStack->op_stack[evalStack->op_stack_len - 1].const_index = evalStack->const_args_len;
+    for (int i = 0; i < num_constants; i++) {
+        evalStack->const_args[evalStack->const_args_len++] = constants[i];
+    }
+    // Evaluate coordinate first on stack
+    if (node->allChildren[0]) {
+        evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[num_points], regPos);
+    }
+
+    evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[1] = currentFrameIndex;
+    return regPos;
 }
 
 int y_clamp_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
@@ -179,7 +240,6 @@ Node* create_leaf(int op_type, double* theData) {
         break;
     case OP_Y_CLAMPED_GRAD:
         n->generate_stack_recursive_from_op = y_clamp_op_gen;
-        n->numChildren = 0;
         n->values = (double*)malloc(4 * sizeof(double));
         memcpy(n->values, theData, 4 * sizeof(double));
         break;
@@ -229,7 +289,29 @@ Node* create_op(int op_type, Node** theChildren, double* theData) {
         n->allChildren = (Node**)malloc(sizeof(Node*));
         n->allChildren[0] = theChildren[0];
         n->numChildren = 1;
-        break;        
+        break;
+    case OP_SPLINE:
+        n->generate_stack_recursive_from_op = spline_op_gen;
+        // Check if subtype is spline point or main spline
+        if (theData[0] == OP_SUBTYPE_SPLINE_POINT) {
+            // Arg (value)
+            n->allChildren = (Node**)malloc(sizeof(Node*));
+            n->allChildren[0] = theChildren[0];
+            n->numChildren = 1;
+            // Constants (deriv and location)
+            n->values = (double*)malloc(3 * sizeof(double));
+            memcpy(n->values, theData, 3 * sizeof(double));
+        } else if (theData[0] == OP_SUBTYPE_SPLINE) {
+            // theData[1] is the number of spline points in the children array
+            int total_children = theData[1] + 1;
+            n->allChildren = (Node**)malloc(total_children * sizeof(Node*));
+            // spline points followed by coordinate arg
+            memcpy(n->allChildren, theChildren, total_children * sizeof(Node*));
+            n->numChildren = total_children;
+            n->values = (double*)malloc(2 * sizeof(double));
+            memcpy(n->values, theData, 2 * sizeof(double));
+        }
+        break;
     default:
         n->generate_stack_recursive_from_op = two_args_op_gen;
         break;
@@ -402,6 +484,46 @@ double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
         case OP_SHIFTED_NOISE:
             regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
             break;
+        case OP_SPLINE:
+            // If const_index is non negative, treat as main spline, else treat as spline point
+            if (finalStack->op_stack[i].const_index >= 0) {
+                double coord = get_arg(finalStack, regArray, i, 0);
+                int num_points = get_const(finalStack, i, 0);
+                int len = num_points;
+                // Search for point
+                int point_index = 0;
+                while (len > 0) {
+                    int half = len / 2;
+                    int mid = point_index + half;
+                    if (coord < get_const(finalStack, i, mid + 1)) {
+                        len = half;
+                    } else {
+                        point_index = mid + 1;
+                        len -= half + 1;
+                    }
+                }
+                point_index -= 1;
+                // Set spline state in registers if applicable
+                if (point_index < 0) {
+                    int first_point_index = get_const(finalStack, i, (num_points * 2) + 1);
+                    // If first point is constant, save result in register and go to return frame
+                    if (first_point_index < 0) {
+                        double first_point_loc = get_const(finalStack, i, 1);
+                        double first_point_deriv = get_const(finalStack, i, num_points + 1);
+                        double first_point_value = finalStack->const_args[abs(first_point_index) - 1];
+
+                        regArray[finalStack->op_stack[i].result_index] = linear_ext_if_non_zero(first_point_deriv, first_point_loc, coord, first_point_value);
+                        i = finalStack->op_stack[i].arg_indexes[1];
+                        break;
+                    }
+
+                }
+
+
+            } else {
+
+            }
+            break;
         default:
             break;
         }
@@ -426,6 +548,7 @@ int main() {
     register_op(OP_CLAMP, 0, 0);            // non associative
     register_op(OP_Y_CLAMPED_GRAD, 0, 0);   // non associative
     register_op(OP_SHIFTED_NOISE, 10, 0);   // non associative - FIX THIS EVALUATION, YOU DAMNNED TWAT
+    register_op(OP_SPLINE, 0, 0);           // non associative
 
     // Node* root = tree_to_vine(associativity_test_case());
     // EvalStack* theStack = generate_stack_wrapper(root);

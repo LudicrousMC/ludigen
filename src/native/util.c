@@ -22,3 +22,7 @@ double clamped_map(
     double inv_lerp = inverse_lerp(pos1, x, y);
     return inv_lerp < 0.0 ? val1 : inv_lerp > 1.0 ? val2 : lerp(inv_lerp, val1, val2);
 }
+
+double linear_ext_if_non_zero(double p_deriv, double p_loc, double x, double value) {
+    return p_deriv == 0.0 ? value : value + (p_deriv * (x - p_loc));
+}

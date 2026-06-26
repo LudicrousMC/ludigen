@@ -108,6 +108,21 @@ Node* y_clamped_grad_test_case() {
     return create_leaf(OP_Y_CLAMPED_GRAD, (double []){-10.0, 10.0, 66.0, 68.0});
 }
 
+Node* basic_spline_test_case() {
+    return create_op(
+        OP_SPLINE,
+        (Node*[]){
+            create_op( // Point
+                OP_SPLINE,
+                (Node*[]){create_leaf(OP_CONST, (double[]){67})},
+                (double[]){OP_SUBTYPE_SPLINE_POINT, 1.0, 0.0}
+            ),
+            create_leaf(OP_CONST, (double[]){0.9}) // Coordinate
+        },
+        (double[]){OP_SUBTYPE_SPLINE, 1.0} // point count
+    );
+}
+
 #define EPSILON 0.0000000000001
 
 int test_full_algo(Node* root, char* case_name, int case_num, int expected_regs, double expected_result) {
@@ -146,6 +161,7 @@ void run_all_test_cases() {
         { .name = "Squeeze", .fn = squeeze_test_case, .exp_regs = 1, .exp_result = 0.458333333333333333333333333333 },
         { .name = "Clamp", .fn = clamp_test_case, .exp_regs = 1, .exp_result = 1.0 },
         { .name = "Y Clamped Gradient", .fn = y_clamped_grad_test_case, .exp_regs = 1, .exp_result = 67.0 },
+        { .name = "Basic Spline", .fn = basic_spline_test_case, .exp_regs = 1, .exp_result = 67.0 },
     };
     bool consider_regs = true;
     int len = sizeof(cases) / sizeof(cases[0]);
