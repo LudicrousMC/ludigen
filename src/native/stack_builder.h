@@ -42,6 +42,8 @@ int preorder_traversal_depth_count(Node* root); // preorder traversal of tree an
 EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root); // preorder traversal to determine allocation sizes of EvalStack arrays
 int generate_stack_recursive(EvalStack* evalStack, Node* node, int regPos); // recursive function to generate evaluation stack
 EvalStack* generate_stack_wrapper(Node* node); // wrapper function to generate evaluation stack
+int spline_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for the spline operation
+int y_clamp_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for the y clamp gradient operation
 int one_arg_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for a one arg operation
 int two_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for a two arg operation
 int three_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for a three arg operation

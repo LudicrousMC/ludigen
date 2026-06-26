@@ -140,7 +140,7 @@ int spline_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, in
     int num_points = node->values[1];
     // Constants Length is (number of points * (location, deriv, stack index)) + num_points constant
     int num_constants = (num_points * 3) + 1;
-    double constants[num_constants] = {};
+    double constants[num_constants];
     constants[0] = num_points;
 
     for (int i = 0, j = 1; i < num_points; i++, j++) {
@@ -243,6 +243,17 @@ Node* create_leaf(int op_type, double* theData) {
         n->values = (double*)malloc(4 * sizeof(double));
         memcpy(n->values, theData, 4 * sizeof(double));
         break;
+    case OP_BLEND_OFFSET:
+        n->operationType = OP_CONST;
+        n->values = (double*)malloc(sizeof(double));
+        n->values[0] = 0.0;
+        break;
+    case OP_BLEND_ALPHA:
+    case OP_END_ISLANDS:
+        n->operationType = OP_CONST;
+        n->values = (double*)malloc(sizeof(double));
+        n->values[0] = 1.0;
+        break;
     default:
         break;
     }
@@ -285,6 +296,12 @@ Node* create_op(int op_type, Node** theChildren, double* theData) {
     case OP_INVERT:
     case OP_SQUEEZE:
     case OP_CLAMP:
+    case OP_BLEND_DENSITY:
+    case OP_INTERPOLATED:
+    case OP_CACHE_ONCE:
+    case OP_FLAT_CACHE:
+    case OP_CACHE_2D:
+    case OP_CACHE_ALL_IN_CELL:
         n->generate_stack_recursive_from_op = one_arg_op_gen;
         n->allChildren = (Node**)malloc(sizeof(Node*));
         n->allChildren[0] = theChildren[0];
@@ -524,6 +541,14 @@ double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
 
             }
             break;
+        case OP_BLEND_DENSITY:
+        case OP_INTERPOLATED:
+        case OP_CACHE_ONCE:
+        case OP_FLAT_CACHE:
+        case OP_CACHE_2D:
+        case OP_CACHE_ALL_IN_CELL:
+            regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0);
+            break;
         default:
             break;
         }
@@ -534,21 +559,29 @@ double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
 }
 
 int main() {
-    register_op(OP_ADD, 2, 1);              // associative
-    register_op(OP_MUL, 3, 1);              // associative
-    register_op(OP_MIN, 1, 1);              // associative
-    register_op(OP_MAX, 1, 1);              // associative
-    register_op(OP_ABS, 0, 0);              // non associative
-    register_op(OP_SQUARE, 0, 0);           // non associative
-    register_op(OP_CUBE, 0,0);              // non associative
-    register_op(OP_HALF_NEGATIVE, 0, 0);    // non associative
-    register_op(OP_QUARTER_NEGATIVE, 0, 0); // non associative
-    register_op(OP_INVERT, 0, 0);           // non associative
-    register_op(OP_SQUEEZE, 0, 0);          // non associative
-    register_op(OP_CLAMP, 0, 0);            // non associative
-    register_op(OP_Y_CLAMPED_GRAD, 0, 0);   // non associative
-    register_op(OP_SHIFTED_NOISE, 10, 0);   // non associative - FIX THIS EVALUATION, YOU DAMNNED TWAT
-    register_op(OP_SPLINE, 0, 0);           // non associative
+    register_op(OP_ADD, 2, 1);                  // associative
+    register_op(OP_MUL, 3, 1);                  // associative
+    register_op(OP_MIN, 1, 1);                  // associative
+    register_op(OP_MAX, 1, 1);                  // associative
+    register_op(OP_ABS, 0, 0);                  // non associative
+    register_op(OP_SQUARE, 0, 0);               // non associative
+    register_op(OP_CUBE, 0,0);                  // non associative
+    register_op(OP_HALF_NEGATIVE, 0, 0);        // non associative
+    register_op(OP_QUARTER_NEGATIVE, 0, 0);     // non associative
+    register_op(OP_INVERT, 0, 0);               // non associative
+    register_op(OP_SQUEEZE, 0, 0);              // non associative
+    register_op(OP_CLAMP, 0, 0);                // non associative
+    register_op(OP_Y_CLAMPED_GRAD, 0, 0);       // non associative
+    register_op(OP_SHIFTED_NOISE, 10, 0);       // non associative - FIX THIS EVALUATION, YOU DAMNNED TWAT
+    register_op(OP_SPLINE, 0, 0);               // non associative
+    register_op(OP_BLEND_DENSITY, 0, 0);        // non associative
+    register_op(OP_BLEND_OFFSET, 0, 0);         // non associative
+    register_op(OP_BLEND_ALPHA, 0, 0);          // non associative
+    register_op(OP_CACHE_ONCE, 0, 0);           // non associative
+    register_op(OP_FLAT_CACHE, 0, 0);           // non associative
+    register_op(OP_CACHE_2D, 0, 0);             // non associative
+    register_op(OP_CACHE_ALL_IN_CELL, 0, 0);    // non associative
+    register_op(OP_END_ISLANDS, 0, 0);          // non associative
 
     // Node* root = tree_to_vine(associativity_test_case());
     // EvalStack* theStack = generate_stack_wrapper(root);

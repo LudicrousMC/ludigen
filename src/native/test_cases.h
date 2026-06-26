@@ -25,6 +25,8 @@ Node* inverse_test_case(); // generates a test case for inverse: 1 reg used
 Node* squeeze_test_case(); // generates a test case for squeeze: 1 reg used
 Node* clamp_test_case(); // generates a test case for clamp: 1 reg used
 Node* y_clamped_grad_test_case(); // generates a test case for y clamped gradient: 1 reg used
+Node* basic_spline_test_case(); // generates a test case for spline: 3 reg used
+Node* blend_test_case(); // generates a test case for blend ops: 1 reg used
 int test_full_algo(Node* root, char* case_name, int case_num, int expected_regs, double expected_result);
 void run_all_test_cases();
 

@@ -123,6 +123,11 @@ Node* basic_spline_test_case() {
     );
 }
 
+Node* blend_test_case() {
+    Node* add = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, (double[]){67.0}), create_leaf(OP_BLEND_OFFSET, NULL)}, NULL);
+    Node* root = create_op(OP_MUL, (Node *[]){add, create_leaf(OP_BLEND_ALPHA, NULL)}, NULL);
+}
+
 #define EPSILON 0.0000000000001
 
 int test_full_algo(Node* root, char* case_name, int case_num, int expected_regs, double expected_result) {
@@ -162,6 +167,7 @@ void run_all_test_cases() {
         { .name = "Clamp", .fn = clamp_test_case, .exp_regs = 1, .exp_result = 1.0 },
         { .name = "Y Clamped Gradient", .fn = y_clamped_grad_test_case, .exp_regs = 1, .exp_result = 67.0 },
         { .name = "Basic Spline", .fn = basic_spline_test_case, .exp_regs = 1, .exp_result = 67.0 },
+        { .name = "Blend Operations", .fn = blend_test_case, .exp_regs = 1, .exp_result = 67.0 }
     };
     bool consider_regs = true;
     int len = sizeof(cases) / sizeof(cases[0]);
