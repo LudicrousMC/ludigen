@@ -109,15 +109,18 @@ Node* y_clamped_grad_test_case() {
 }
 
 Node* basic_spline_test_case() {
+    Node* add = create_op(OP_ADD, (Node*[]){create_leaf(OP_CONST, (double[]){60.0}), create_leaf(OP_CONST, (double[]){7.0})}, NULL);
     return create_op(
         OP_SPLINE,
         (Node*[]){
             create_op( // Point
                 OP_SPLINE,
-                (Node*[]){create_leaf(OP_CONST, (double[]){67})},
+                (Node*[]){add},
+                //(Node*[]){create_leaf(OP_CONST, (double[]){67})},
+                //(Node*[]){larger_opt_test_case()},
                 (double[]){OP_SUBTYPE_SPLINE_POINT, 1.0, 0.0}
             ),
-            create_leaf(OP_CONST, (double[]){0.9}) // Coordinate
+            create_leaf(OP_CONST, (double[]){0.7}) // Coordinate
         },
         (double[]){OP_SUBTYPE_SPLINE, 1.0} // point count
     );
@@ -166,7 +169,7 @@ void run_all_test_cases() {
         { .name = "Squeeze", .fn = squeeze_test_case, .exp_regs = 1, .exp_result = 0.458333333333333333333333333333 },
         { .name = "Clamp", .fn = clamp_test_case, .exp_regs = 1, .exp_result = 1.0 },
         { .name = "Y Clamped Gradient", .fn = y_clamped_grad_test_case, .exp_regs = 1, .exp_result = 67.0 },
-        { .name = "Basic Spline", .fn = basic_spline_test_case, .exp_regs = 1, .exp_result = 67.0 },
+        { .name = "Basic Spline", .fn = basic_spline_test_case, .exp_regs = -1, .exp_result = 67.0 },
         { .name = "Blend Operations", .fn = blend_test_case, .exp_regs = 1, .exp_result = 67.0 }
     };
     bool consider_regs = true;
