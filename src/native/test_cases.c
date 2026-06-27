@@ -113,16 +113,68 @@ Node* basic_spline_test_case() {
     return create_op(
         OP_SPLINE,
         (Node*[]){
-            create_op( // Point
+            create_op( // Point 1
                 OP_SPLINE,
-                (Node*[]){add},
-                //(Node*[]){create_leaf(OP_CONST, (double[]){67})},
-                //(Node*[]){larger_opt_test_case()},
-                (double[]){OP_SUBTYPE_SPLINE_POINT, 1.0, 0.0}
+                (Node*[]){create_leaf(OP_CONST, (double[]){65})},
+                (double[]){OP_SUBTYPE_SPLINE_POINT, 1.0, 6.0}
             ),
-            create_leaf(OP_CONST, (double[]){0.7}) // Coordinate
+            create_op( // Point 2
+                OP_SPLINE,
+                (Node*[]){create_leaf(OP_CONST, (double[]){68})},
+                (double[]){OP_SUBTYPE_SPLINE_POINT, 2.0, 2.0}
+            ),
+            create_leaf(OP_CONST, (double[]){1.5}) // Coordinate
         },
-        (double[]){OP_SUBTYPE_SPLINE, 1.0} // point count
+        (double[]){OP_SUBTYPE_SPLINE, 2.0} // point count
+    );
+}
+
+Node* nested_spline_test_case() {
+    Node* nested_spline2 = create_op(OP_SPLINE,
+        (Node*[]){
+            create_op(OP_SPLINE, // Point 1
+                (Node*[]){create_leaf(OP_CONST, (double[]){65})}, // value
+                (double[]){OP_SUBTYPE_SPLINE_POINT, 6.0, 0.0} // location, derivative
+            ),
+            create_op(OP_SPLINE, // Point 2
+                (Node*[]){create_leaf(OP_CONST, (double[]){67})}, // value
+                (double[]){OP_SUBTYPE_SPLINE_POINT, 7.0, 0.0} // location, derivative
+            ),
+            create_op(OP_ABS, (Node*[]){create_leaf(OP_CONST, (double[]){-6.5})}, NULL) // Coordinate
+        },
+        (double[]){OP_SUBTYPE_SPLINE, 2.0} // point count
+    );
+    Node* nested_spline3 = create_op(OP_SPLINE,
+        (Node*[]){
+            create_op(OP_SPLINE, // Point 1
+                (Node*[]){create_leaf(OP_CONST, (double[]){68})}, // value
+                (double[]){OP_SUBTYPE_SPLINE_POINT, -3.0, 0.0} // location, derivative
+            ),
+            create_op(OP_SPLINE, // Point 2
+                (Node*[]){create_leaf(OP_CONST, (double[]){-70})}, // value
+                (double[]){OP_SUBTYPE_SPLINE_POINT, -1.0, 0.0} // location, derivative
+            ),
+            create_op(OP_MUL, (Node*[]){create_leaf(OP_CONST, (double[]){-4.0}), create_leaf(OP_CONST, (double[]){0.76})}, NULL) // Coordinate
+        },
+        (double[]){OP_SUBTYPE_SPLINE, 2.0} // point count
+    );
+    return create_op(OP_SPLINE,
+        (Node*[]){
+            create_op(OP_SPLINE, // Point 1
+                (Node*[]){create_leaf(OP_CONST, (double[]){-7})}, // value
+                (double[]){OP_SUBTYPE_SPLINE_POINT, 0.5, 0.0} // location, derivative
+            ),
+            create_op(OP_SPLINE, // Point 2
+                (Node*[]){nested_spline2}, // value
+                (double[]){OP_SUBTYPE_SPLINE_POINT, 1.0, 0.0} // location, derivative
+            ),
+            create_op(OP_SPLINE, // Point 3
+                (Node*[]){nested_spline3}, // value
+                (double[]){OP_SUBTYPE_SPLINE_POINT, 2.0, 0.0} // location, derivative
+            ),
+            create_op(OP_ADD, (Node*[]){create_leaf(OP_CONST, (double[]){1.0}), create_leaf(OP_CONST, (double[]){0.5})}, NULL) // Coordinate
+        },
+        (double[]){OP_SUBTYPE_SPLINE, 3.0} // point count
     );
 }
 
@@ -169,7 +221,8 @@ void run_all_test_cases() {
         { .name = "Squeeze", .fn = squeeze_test_case, .exp_regs = 1, .exp_result = 0.458333333333333333333333333333 },
         { .name = "Clamp", .fn = clamp_test_case, .exp_regs = 1, .exp_result = 1.0 },
         { .name = "Y Clamped Gradient", .fn = y_clamped_grad_test_case, .exp_regs = 1, .exp_result = 67.0 },
-        { .name = "Basic Spline", .fn = basic_spline_test_case, .exp_regs = -1, .exp_result = 67.0 },
+        { .name = "Basic Spline", .fn = basic_spline_test_case, .exp_regs = 1, .exp_result = 67.0 },
+        { .name = "Nested Spline", .fn = nested_spline_test_case, .exp_regs = 4, .exp_result = 67.0 },
         { .name = "Blend Operations", .fn = blend_test_case, .exp_regs = 1, .exp_result = 67.0 }
     };
     bool consider_regs = true;
