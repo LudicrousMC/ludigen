@@ -144,51 +144,46 @@ EvalStack* generate_stack_wrapper(Node* node) {
 int spline_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
     evalStack->op_stack[currentFrameIndex].const_index = -(currentFrameIndex + 1);
     int num_points = node->values[1];
-    // Constants Length is (number of points * (location, deriv, stack index)) + num_points constant
-    int num_constants = (num_points * 3) + 1;
-    double constants[num_constants];
-    constants[0] = num_points;
+    double constants[num_points * 3];
     int pointFrameIndexes[num_points];
 
-    for (int i = 0, j = 1; i < num_points; i++, j++) {
+    for (int i = 0; i < num_points; i++) {
         Node* point = node->allChildren[i];
         size_t pointFrameIndex = evalStack->op_stack_len; // Save reference to current point StackFrame
         evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){ .op_type = point->operationType, .result_index = regPos };
-        constants[j] = point->values[1]; // Add point location
-        constants[j + num_points] = point->values[2]; // Add point derivative
-        //evalStack->max_reg = (regPos + 3 > evalStack->max_reg) ? regPos + 3 : evalStack->max_reg;
+        constants[i*3] = point->values[1]; // Add point location
+        constants[(i*3) + 1] = point->values[2]; // Add point derivative
         int index = generate_stack_recursive(evalStack, point->allChildren[0], regPos + 3); // Generate point value stack
 
         // If point value is constant, store index as negative const_args index, else store op_stack index for evaluating point
         if (index < 0) {
             pointFrameIndexes[i] = -1;
-            // Undo spline add
+            // Undo spline point add
             evalStack->op_stack_len--;
-            constants[j + (num_points*2)] = (double)index;
+            constants[(i*3) + 2] = (double)index;
         } else {
             pointFrameIndexes[i] = pointFrameIndex;
-            constants[j + (num_points*2)] = evalStack->op_stack_len;
-            // Save value reg position in spline point args
-            evalStack->op_stack[pointFrameIndex].arg_indexes[0] = index;
+            constants[(i*3) + 2] = evalStack->op_stack_len;
+            evalStack->op_stack[pointFrameIndex].arg_indexes[1] = i;
             // Store return frame index as negative const_index
             evalStack->op_stack[pointFrameIndex].const_index = -(currentFrameIndex + 1);
         }
     }
     int main_spline_index = evalStack->op_stack_len;
     evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){ .op_type = node->operationType, .result_index = regPos };
-    evalStack->op_stack[currentFrameIndex].arg_indexes[1] = main_spline_index;
+    evalStack->op_stack[currentFrameIndex].arg_indexes[0] = main_spline_index;
 
     for (int i = 0; i < num_points; i++) {
         int index = pointFrameIndexes[i];
         if (index != -1) {
-            // Store main spline frame in second arg index of points
-            evalStack->op_stack[index].arg_indexes[1] = main_spline_index;
+            // Store main spline frame in first arg index of points
+            evalStack->op_stack[index].arg_indexes[0] = main_spline_index;
         }
     }
 
     // Add constants to const_args stack
     evalStack->op_stack[main_spline_index].const_index = evalStack->const_args_len;
-    for (int i = 0; i < num_constants; i++) {
+    for (int i = 0; i < num_points * 3; i++) {
         evalStack->const_args[evalStack->const_args_len++] = constants[i];
     }
     // Evaluate coordinate first on stack
@@ -196,8 +191,9 @@ int spline_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, in
         evalStack->op_stack[main_spline_index].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[num_points], regPos);
     }
 
-    // Store return frame index as second arg
+    // Store return frame index as first arg
     evalStack->op_stack[main_spline_index].arg_indexes[1] = currentFrameIndex;
+    evalStack->op_stack[main_spline_index].arg_indexes[2] = num_points;
     return regPos;
 }
 
@@ -212,12 +208,17 @@ int find_top_surface_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node
     evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
     for (int i = 0; i < 2; i++)
         evalStack->const_args[evalStack->const_args_len++] = node->values[i];
-    
-    if (node->allChildren[0] && node->allChildren[1]) {
-        evalStack->op_stack[currentFrameIndex].arg_indexes[1] = generate_stack_recursive(evalStack, node->allChildren[1], regPos);
-        evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){.op_type = OP_FIND_TOP_SURFACE, .const_index = -(currentFrameIndex + 1)};
-        evalStack->op_stack[currentFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos + 1);
-    }
+
+    // Density arg
+    evalStack->op_stack[currentFrameIndex].arg_indexes[1] = generate_stack_recursive(evalStack, node->allChildren[1], regPos + 1);
+    // Loopback PC index for density arg
+    evalStack->op_stack[currentFrameIndex].arg_indexes[2] = evalStack->op_stack_len;
+
+    // Find top surface early return condition
+    evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){.op_type = OP_FIND_TOP_SURFACE, .const_index = -(currentFrameIndex + 1)};
+    // Upper bound arg
+    evalStack->op_stack[currentFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos);
+
     return regPos;
 }
 
@@ -261,11 +262,12 @@ int three_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node
 }
 
 Node* create_leaf(int op_type, double* theData) {
-    Node* n    = (Node*)malloc(sizeof(Node));
-    n->type    = NODE_LEAF;
+    Node* n          = (Node*)malloc(sizeof(Node));
+    n->type          = NODE_LEAF;
     n->operationType = op_type;
-    n->depth = 0;
-    n->label   = 0;
+    n->depth         = 0;
+    n->label         = 0;
+    n->numChildren   = 0;
     switch (op_type)
     {
     case OP_CONST:
@@ -291,7 +293,6 @@ Node* create_leaf(int op_type, double* theData) {
     default:
         break;
     }
-    n->numChildren = 0;
     return n;
 }
 
@@ -315,14 +316,14 @@ Node* create_op(int op_type, Node** theChildren, double* theData) {
         n->numChildren = 2;
         break;
     case OP_FIND_TOP_SURFACE:
-        n->generate_stack_recursive_from_op = two_args_op_gen;
+        n->generate_stack_recursive_from_op = find_top_surface_op_gen;
         n->allChildren = (Node**)malloc(2 * sizeof(Node*));
-        n->allChildren[0] = theChildren[0];
-        n->allChildren[1] = theChildren[1];
+        n->allChildren[0] = theChildren[0]; // upper bound
+        n->allChildren[1] = theChildren[1]; // density
         n->numChildren = 2;
         n->values = (double*)malloc(2 * sizeof(double));
-        n->values[0] = theData[0];
-        n->values[1] = theData[1];
+        n->values[0] = theData[0]; // cell height
+        n->values[1] = theData[1]; // lower bound
         break;
     case OP_SHIFTED_NOISE:
         n->generate_stack_recursive_from_op = three_args_op_gen;
@@ -412,7 +413,8 @@ void rotate_right(Node* tail) {
 }
 
 int larger_arg_right(Node* root) {
-    if (root->numChildren != 2 || !lookup_op(root->operationType)->associative)
+    OpInfo* op_info = lookup_op(root->operationType);
+    if (root->numChildren != 2 || !op_info || !op_info->associative)
         return root->numChildren;
 
     int left_max_num_children = larger_arg_right(root->allChildren[0]);
@@ -429,8 +431,8 @@ int larger_arg_right(Node* root) {
 
 Node* tree_to_vine(Node* root) {
     // Prevent bad child dereferences
-    larger_arg_right(root);
     if (root->operationType == OP_CONST) return root;
+    larger_arg_right(root);
     Node pseudo_root;
     pseudo_root.allChildren     = (Node*[2]){0};
     pseudo_root.allChildren[1]  = root;
@@ -441,15 +443,11 @@ Node* tree_to_vine(Node* root) {
 
     Node* tail = &pseudo_root;
     Node* rest = tail->allChildren[1];
-    if (root->numChildren > 2 || root->operationType == OP_SPLINE) {
-        // Recurse for nodes with more than two children
+    if (!lookup_op(root->operationType)) {
+        // Passthrough tree_to_vine
         for (int i = 0; i < root->numChildren; i++) {
             root->allChildren[i] = tree_to_vine(root->allChildren[i]);
         }
-        return root;
-    } else if (root->numChildren == 1) {
-        // Passthrough for nodes with one child
-        root->allChildren[0] = tree_to_vine(root->allChildren[0]);
         return root;
     }
 
@@ -488,7 +486,7 @@ double get_const(EvalStack* s, int offset, int arg_num) {
     return s->const_args[s->op_stack[offset].const_index + arg_num];
 }
 
-double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
+double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
 
     //printf("Registers Used: %d\n", finalStack->max_reg+1);
     double regArray[finalStack->max_reg+1];
@@ -549,26 +547,50 @@ double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
             double toY = get_const(finalStack, i, 1);
             double fromValue = get_const(finalStack, i, 2);
             double toValue = get_const(finalStack, i, 3);
-            regArray[finalStack->op_stack[i].result_index] = clamped_map(y, fromY, toY, fromValue, toValue);
+            regArray[finalStack->op_stack[i].result_index] = clamped_map((double)y, fromY, toY, fromValue, toValue);
             break;
         case OP_FIND_TOP_SURFACE:
-            if (finalStack->op_stack[i].const_index < 0)
-            {
-                int mainStackFrameIndex = abs(finalStack->op_stack[i].const_index) - 1;
-                double cellHeight = get_const(finalStack, mainStackFrameIndex, 0);
-                double topY = get_arg(finalStack, regArray, mainStackFrameIndex, 0);
-                double lowerBound = get_const(finalStack, mainStackFrameIndex, 1);
-                if (topY <= lowerBound)
-                {
-                    regArray[finalStack->op_stack[i].result_index] = lowerBound;
-                    i = mainStackFrameIndex;
+            if (finalStack->op_stack[i].const_index < 0) {
+                // Find Top Surface Early Return Condition
+                int main_pc_index = abs(finalStack->op_stack[i].const_index) - 1;
+                int cell_height = (int)get_const(finalStack, main_pc_index, 0);
+                int lower_bound = (int)get_const(finalStack, main_pc_index, 1);
+                int top_y = ((int)floor(get_arg(finalStack, regArray, main_pc_index, 0) / cell_height)) * cell_height;
+                if (top_y <= lower_bound) {
+                    regArray[finalStack->op_stack[i].result_index] = lower_bound;
+                    i = main_pc_index;
+                } else {
+                    // Save current y and switch y context to top_y
+                    regArray[finalStack->op_stack[i].result_index] = (double)y;
+                    y = top_y;
                 }
-                else
-                {
-                    regArray[finalStack->op_stack[i].result_index];
+            } else {
+                // Find Top Surface Main
+                int cell_height = (int)get_const(finalStack, i, 0);
+                int lower_bound = (int)get_const(finalStack, i, 1);
+                double density = get_arg(finalStack, regArray, i, 1);
+
+                if (density > 0.0) {
+                    int block_y = y;
+                    // Switch y context back to old y
+                    y = regArray[finalStack->op_stack[i].result_index];
+                    regArray[finalStack->op_stack[i].result_index] = block_y;
+                } else if (y >= lower_bound) {
+                    if (finalStack->op_stack[i].arg_indexes[1] < 0) {
+                        regArray[finalStack->op_stack[i].result_index + 1] = density;
+                        i++;
+                    } else {
+                        i = finalStack->op_stack[i].arg_indexes[2];
+                    }
+                    y -= cell_height;
+                } else {
+                    // Switch y context back to old y
+                    y = regArray[finalStack->op_stack[i].result_index];
+
+                    regArray[finalStack->op_stack[i].result_index] = lower_bound;
                 }
-                break;
             }
+            break;
         case OP_SHIFTED_NOISE:
             regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
             break;
@@ -576,14 +598,14 @@ double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
             // If const_index is non negative, treat as main spline, else treat as spline point
             if (finalStack->op_stack[i].const_index >= 0) {
                 double coord = get_arg(finalStack, regArray, i, 0);
-                int num_points = get_const(finalStack, i, 0);
+                int num_points = finalStack->op_stack[i].arg_indexes[2];
                 int len = num_points;
                 // Search for point
                 int point_index = 0;
                 while (len > 0) {
                     int half = len / 2;
                     int mid = point_index + half;
-                    if (coord < get_const(finalStack, i, mid + 1)) {
+                    if (coord < get_const(finalStack, i, mid * 3)) {
                         len = half;
                     } else {
                         point_index = mid + 1;
@@ -591,137 +613,93 @@ double evaluate_stack(EvalStack* finalStack, double x, double y, double z) {
                     }
                 }
                 point_index -= 1;
+                point_index *= 3; // Convert to 3 value indexing
 
-                if (point_index < 0) {
-                    // If first point (single point)
-                    int first_point_index = get_const(finalStack, i, (num_points * 2) + 1);
-                    // If first point is constant (negative), save result in register and go to return frame,
+                if (point_index < 0 || point_index == num_points - 1) {
+                    // If first point or last point (single point)
+                    if (point_index < 0)
+                        point_index = 0;
+                    int point_PC = get_const(finalStack, i, point_index + 2);
+                    // If first/last point is constant (negative), save result in register and go to return frame,
                     // else go to point value start frame
-                    if (first_point_index < 0) {
-                        double first_point_loc = get_const(finalStack, i, 1);
-                        double first_point_deriv = get_const(finalStack, i, num_points + 1);
-                        double first_point_value = finalStack->const_args[abs(first_point_index) - 1];
+                    if (point_PC < 0) {
+                        double point_loc = get_const(finalStack, i, point_index);
+                        double point_deriv = get_const(finalStack, i, point_index + 1);
+                        double point_value = finalStack->const_args[abs(point_PC) - 1];
 
                         // Calculate final value and set stack pos to return spline frame
-                        regArray[finalStack->op_stack[i].result_index] = linear_ext_if_non_zero(first_point_deriv, first_point_loc, coord, first_point_value);
+                        regArray[finalStack->op_stack[i].result_index] = linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value);
                         i = finalStack->op_stack[i].arg_indexes[1];
                     } else {
-                        // Set spline state in registers and set stack offset to compute first point
-                        regArray[finalStack->op_stack[i].result_index] = coord;
-                        regArray[finalStack->op_stack[i].result_index + 1] = 0.0; // point index
-                        regArray[finalStack->op_stack[i].result_index + 2] = 0.0; // Single point indicator
-                        i = first_point_index;
-                    }
-                } else if (point_index == num_points - 1) {
-                    // If last point (single point)
-                    int last_point_index = get_const(finalStack, i, (num_points * 3));
-                    // If last point is constant (negative), save result in register and go to return frame,
-                    // else go to point value start frame
-                    if (last_point_index < 0) {
-                        double last_point_loc = get_const(finalStack, i, num_points);
-                        double last_point_deriv = get_const(finalStack, i, (num_points * 2));
-                        double last_point_value = finalStack->const_args[abs(last_point_index) - 1];
-
-                        // Calculate final value and set stack pos to return spline frame
-                        regArray[finalStack->op_stack[i].result_index] = linear_ext_if_non_zero(last_point_deriv, last_point_loc, coord, last_point_value);
-                        i = finalStack->op_stack[i].arg_indexes[1];
-                    } else {
-                        // Set spline state in registers and set stackk offset to compute last point
-                        regArray[finalStack->op_stack[i].result_index] = coord;
-                        regArray[finalStack->op_stack[i].result_index + 1] = (double)(num_points - 1); // point index
-                        regArray[finalStack->op_stack[i].result_index + 2] = 0.0; // Single point indicator
-                        i = last_point_index;
+                        // Set spline state in registers and set stack offset to compute first or last point
+                        regArray[finalStack->op_stack[i].result_index + 1] = 0.0; // Single point indicator
+                        i = point_PC;
                     }
                 } else {
                     // If between points, interpolate (double point)
-                    int point1_index = get_const(finalStack, i, (num_points * 2) + 1 + point_index);
-                    int point2_index = get_const(finalStack, i, (num_points * 2) + 2 + point_index);
+                    int point1_PC = get_const(finalStack, i, point_index + 2);
+                    int point2_PC = get_const(finalStack, i, point_index + 5);
                     // If both points are constants (negative), compute spline and go to return frame,
-                    // else if point2 is constant (negative), save result in register and start on first point
-                    // else go to point value start frame
-                    if (point2_index < 0 && point1_index < 0) {
-                        double point1_loc = get_const(finalStack, i, 1 + point_index);
-                        double point1_deriv = get_const(finalStack, i, num_points + 1 + point_index);
-                        double point1_val = finalStack->const_args[abs(point1_index) - 1];
-                        double point2_loc = get_const(finalStack, i, 2 + point_index);
-                        double point2_deriv = get_const(finalStack, i, num_points + 2 + point_index);
-                        double point2_val = finalStack->const_args[abs(point2_index) - 1];
+                    // else if point2 is constant (negative), start on first point
+                    // else go to point2 start frame
+                    if (point2_PC < 0 && point1_PC < 0) {
+                        double point1_loc = get_const(finalStack, i, point_index);
+                        double point1_deriv = get_const(finalStack, i, point_index + 1);
+                        double point1_val = finalStack->const_args[abs(point1_PC) - 1];
+                        double point2_loc = get_const(finalStack, i, point_index + 3);
+                        double point2_deriv = get_const(finalStack, i, point_index + 4);
+                        double point2_val = finalStack->const_args[abs(point2_PC) - 1];
 
                         // Store final value and set stack offset to return frame
                         regArray[finalStack->op_stack[i].result_index] = spline_compute(point1_loc, point1_deriv, point1_val, point2_loc, point2_deriv, point2_val, coord);
                         i = finalStack->op_stack[i].arg_indexes[1];
-                    } else if (point2_index < 0) {
-                        regArray[finalStack->op_stack[i].result_index + 1] = (double)point_index; // point index
-                        regArray[finalStack->op_stack[i].result_index + 2] = 1.0; // First point eval indicator
-                        i = point1_index;
-                    } else if (point1_index < 0) {
-                        regArray[finalStack->op_stack[i].result_index + 1] = (double)point_index; // point index
-                        regArray[finalStack->op_stack[i].result_index + 2] = 2.0; // Second point eval indicator
-                        i = point2_index;
+                    } else if (point2_PC < 0) {
+                        regArray[finalStack->op_stack[i].result_index + 1] = 1.0; // First point eval indicator
+                        i = point1_PC;
+                    } else if (point1_PC < 0) {
+                        regArray[finalStack->op_stack[i].result_index + 1] = 2.0; // Second point eval indicator
+                        i = point2_PC;
                     } else {
-                        // point_index + 1 ensures negative value during phase 2 of double point eval
-                        regArray[finalStack->op_stack[i].result_index + 1] = (double)(point_index + 1); // point index
-                        regArray[finalStack->op_stack[i].result_index + 2] = 3.0; // Double point eval indicator
-                        i = point2_index;
+                        regArray[finalStack->op_stack[i].result_index + 1] = 4.0; // Double point eval indicator
+                        i = point2_PC;
                     }
                 }
             } else {
                 // Spline point case
                 int main_spline_reg_index = finalStack->op_stack[i].result_index;
-                int main_spline_stack_index = finalStack->op_stack[i].arg_indexes[1];
-                if (regArray[main_spline_reg_index + 1] < 0.0) {
-                    // Double point eval phase 2 case
-                    int point_index = -(regArray[main_spline_reg_index + 1] + 1);
-                    int num_points = get_const(finalStack, main_spline_stack_index, 0);
-                    double coord = get_arg(finalStack, regArray, main_spline_stack_index, 0);
-                    double point1_loc = get_const(finalStack, main_spline_stack_index, point_index + 1);
-                    double point1_deriv = get_const(finalStack, main_spline_stack_index, num_points + point_index + 1);
-                    double point1_value = get_arg(finalStack, regArray, i, 0);
-                    double point2_loc = get_const(finalStack, main_spline_stack_index, point_index + 2);
-                    double point2_deriv = get_const(finalStack, main_spline_stack_index, num_points + point_index + 2);
-                    double point2_value = regArray[main_spline_reg_index + 2];
-                    regArray[finalStack->op_stack[i].result_index] = spline_compute(point1_loc, point1_deriv, point1_value, point2_loc, point2_deriv, point2_value, coord);
-                    i = -(finalStack->op_stack[i].const_index + 1);
-                } else if (regArray[main_spline_reg_index + 2] == 0.0) {
+                int main_spline_stack_index = finalStack->op_stack[i].arg_indexes[0];
+                if (regArray[main_spline_reg_index + 1] == 0.0) {
                     // Single point eval case
-                    int point_index = regArray[main_spline_reg_index + 1];
-                    int num_points = get_const(finalStack, main_spline_stack_index, 0);
+                    int point_index = finalStack->op_stack[i].arg_indexes[1] * 3;
                     double coord = get_arg(finalStack, regArray, main_spline_stack_index, 0);
-                    double point_loc = get_const(finalStack, main_spline_stack_index, point_index + 1);
-                    double point_deriv = get_const(finalStack, main_spline_stack_index, num_points + point_index + 1);
-                    double point_value = get_arg(finalStack, regArray, i, 0);
+                    double point_loc = get_const(finalStack, main_spline_stack_index, point_index);
+                    double point_deriv = get_const(finalStack, main_spline_stack_index, point_index + 1);
+                    double point_value = regArray[main_spline_reg_index + 3];
                     regArray[finalStack->op_stack[i].result_index] = linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value);
                     i = -(finalStack->op_stack[i].const_index + 1);
-                } else if (regArray[main_spline_reg_index + 2] == 1.0) {
-                    // First point eval case
-                    int point_index = regArray[main_spline_reg_index + 1];
-                    int num_points = get_const(finalStack, main_spline_stack_index, 0);
+                } else if (regArray[main_spline_reg_index + 1] >= 1.0 && regArray[main_spline_reg_index + 1] <= 3.0) {
+                    // First point eval case, Second point eval case, and double point phase 2 eval case
+                    int point_index = finalStack->op_stack[i].arg_indexes[1] * 3;
                     double coord = get_arg(finalStack, regArray, main_spline_stack_index, 0);
-                    double point1_loc = get_const(finalStack, main_spline_stack_index, point_index + 1);
-                    double point1_deriv = get_const(finalStack, main_spline_stack_index, num_points + point_index + 1);
-                    double point1_value = get_arg(finalStack, regArray, i, 0);
-                    double point2_loc = get_const(finalStack, main_spline_stack_index, point_index + 2);
-                    double point2_deriv = get_const(finalStack, main_spline_stack_index, num_points + point_index + 2);
-                    double point2_value = get_const(finalStack, main_spline_stack_index, (num_points * 2) + point_index + 2);
+                    double point1_loc = get_const(finalStack, main_spline_stack_index, point_index);
+                    double point1_deriv = get_const(finalStack, main_spline_stack_index, point_index + 1);
+                    double point1_value = regArray[main_spline_reg_index + 1] != 2.0
+                        ? regArray[main_spline_reg_index + 3] // First or double point eval
+                        : get_const(finalStack, main_spline_stack_index, point_index + 2); // Second point eval
+                    double point2_loc = get_const(finalStack, main_spline_stack_index, point_index + 3);
+                    double point2_deriv = get_const(finalStack, main_spline_stack_index, point_index + 4);
+                    double point2_value = regArray[main_spline_reg_index + 1] == 1.0
+                        ? get_const(finalStack, main_spline_stack_index, point_index + 5) // First point eval
+                        : regArray[main_spline_reg_index + 1] == 2.0
+                        ? regArray[main_spline_reg_index + 3] // Second point eval
+                        : regArray[main_spline_reg_index + 2]; // Double point eval
                     regArray[finalStack->op_stack[i].result_index] = spline_compute(point1_loc, point1_deriv, point1_value, point2_loc, point2_deriv, point2_value, coord);
                     i = -(finalStack->op_stack[i].const_index + 1);
-                } else if (regArray[main_spline_reg_index + 2] == 2.0) {
-                    // Second point eval case
-                    int point_index = regArray[main_spline_reg_index + 1];
-                    int num_points = get_const(finalStack, main_spline_stack_index, 0);
-                    double coord = get_arg(finalStack, regArray, main_spline_stack_index, 0);
-                    double point1_loc = get_const(finalStack, main_spline_stack_index, point_index + 1);
-                    double point1_deriv = get_const(finalStack, main_spline_stack_index, num_points + point_index + 1);
-                    double point1_value = get_const(finalStack, main_spline_stack_index, (num_points * 2) + point_index + 1);
-                    double point2_loc = get_const(finalStack, main_spline_stack_index, point_index + 2);
-                    double point2_deriv = get_const(finalStack, main_spline_stack_index, num_points + point_index + 2);
-                    double point2_value = get_arg(finalStack, regArray, i, 0);
-                    regArray[finalStack->op_stack[i].result_index] = spline_compute(point1_loc, point1_deriv, point1_value, point2_loc, point2_deriv, point2_value, coord);
-                    i = -(finalStack->op_stack[i].const_index + 1);
-                } else if (regArray[main_spline_reg_index + 2] == 3.0) {
+                } else if (regArray[main_spline_reg_index + 1] == 4.0) {
                     // Double point eval case
-                    regArray[main_spline_reg_index + 1] = -regArray[main_spline_reg_index + 1]; // Indicate phase 2 of double point eval
-                    regArray[main_spline_reg_index + 2] = get_arg(finalStack, regArray, i, 0); // Override spline state with point 2 value
+                    regArray[main_spline_reg_index + 1]--; // Indicate phase 2 of double point eval
+                    // Move point 2 value to prevent it from being overwritten
+                    regArray[main_spline_reg_index + 2] = regArray[main_spline_reg_index + 3];
                 }
             }
             break;
@@ -747,25 +725,25 @@ int main() {
     register_op(OP_MUL, 3, 1);                  // associative
     register_op(OP_MIN, 1, 1);                  // associative
     register_op(OP_MAX, 1, 1);                  // associative
-    register_op(OP_ABS, 0, 0);                  // non associative
-    register_op(OP_SQUARE, 0, 0);               // non associative
-    register_op(OP_CUBE, 0,0);                  // non associative
-    register_op(OP_HALF_NEGATIVE, 0, 0);        // non associative
-    register_op(OP_QUARTER_NEGATIVE, 0, 0);     // non associative
-    register_op(OP_INVERT, 0, 0);               // non associative
-    register_op(OP_SQUEEZE, 0, 0);              // non associative
-    register_op(OP_CLAMP, 0, 0);                // non associative
-    register_op(OP_Y_CLAMPED_GRAD, 0, 0);       // non associative
-    register_op(OP_SHIFTED_NOISE, 10, 0);       // non associative - FIX THIS EVALUATION, YOU DAMNNED TWAT
-    register_op(OP_SPLINE, 0, 0);               // non associative
-    register_op(OP_BLEND_DENSITY, 0, 0);        // non associative
-    register_op(OP_BLEND_OFFSET, 0, 0);         // non associative
-    register_op(OP_BLEND_ALPHA, 0, 0);          // non associative
-    register_op(OP_CACHE_ONCE, 0, 0);           // non associative
-    register_op(OP_FLAT_CACHE, 0, 0);           // non associative
-    register_op(OP_CACHE_2D, 0, 0);             // non associative
-    register_op(OP_CACHE_ALL_IN_CELL, 0, 0);    // non associative
-    register_op(OP_END_ISLANDS, 0, 0);          // non associative
+    //register_op(OP_ABS, 0, 0);                  // non associative
+    //register_op(OP_SQUARE, 0, 0);               // non associative
+    //register_op(OP_CUBE, 0,0);                  // non associative
+    //register_op(OP_HALF_NEGATIVE, 0, 0);        // non associative
+    //register_op(OP_QUARTER_NEGATIVE, 0, 0);     // non associative
+    //register_op(OP_INVERT, 0, 0);               // non associative
+    //register_op(OP_SQUEEZE, 0, 0);              // non associative
+    //register_op(OP_CLAMP, 0, 0);                // non associative
+    //register_op(OP_Y_CLAMPED_GRAD, 0, 0);       // non associative
+    //register_op(OP_SHIFTED_NOISE, 10, 0);       // non associative - FIX THIS EVALUATION, YOU DAMNNED TWAT
+    //register_op(OP_SPLINE, 0, 0);               // non associative
+    //register_op(OP_BLEND_DENSITY, 0, 0);        // non associative
+    //register_op(OP_BLEND_OFFSET, 0, 0);         // non associative
+    //register_op(OP_BLEND_ALPHA, 0, 0);          // non associative
+    //register_op(OP_CACHE_ONCE, 0, 0);           // non associative
+    //register_op(OP_FLAT_CACHE, 0, 0);           // non associative
+    //register_op(OP_CACHE_2D, 0, 0);             // non associative
+    //register_op(OP_CACHE_ALL_IN_CELL, 0, 0);    // non associative
+    //register_op(OP_END_ISLANDS, 0, 0);          // non associative
 
     // Node* root = tree_to_vine(associativity_test_case());
     // EvalStack* theStack = generate_stack_wrapper(root);

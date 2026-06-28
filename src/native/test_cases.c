@@ -183,6 +183,23 @@ Node* blend_test_case() {
     Node* root = create_op(OP_MUL, (Node *[]){add, create_leaf(OP_BLEND_ALPHA, NULL)}, NULL);
 }
 
+Node* find_top_surf_test_case() {
+    return create_op(OP_FIND_TOP_SURFACE,
+        (Node*[]){
+            create_op(OP_MUL, // upper bound
+                (Node*[]){
+                    create_leaf(OP_CONST, (double[]){67.5}),
+                    create_leaf(OP_CONST, (double[]){2.0})
+                }, NULL
+            ),
+            create_leaf(OP_Y_CLAMPED_GRAD,  // density (becomes greater than 0.0 at y = 67)
+                (double[]){135.0, 0.0, -1.0, 1.0} // from y, to y, from val, to val
+            )
+        },
+        (double[]){1.0, 0.0} // cell height, lower bound
+    );
+}
+
 #define EPSILON 0.0000000000001
 
 int test_full_algo(Node* root, char* case_name, int case_num, int expected_regs, double expected_result) {
@@ -223,7 +240,8 @@ void run_all_test_cases() {
         { .name = "Y Clamped Gradient", .fn = y_clamped_grad_test_case, .exp_regs = 1, .exp_result = 67.0 },
         { .name = "Basic Spline", .fn = basic_spline_test_case, .exp_regs = 1, .exp_result = 67.0 },
         { .name = "Nested Spline", .fn = nested_spline_test_case, .exp_regs = 4, .exp_result = 67.0 },
-        { .name = "Blend Operations", .fn = blend_test_case, .exp_regs = 1, .exp_result = 67.0 }
+        { .name = "Blend Operations", .fn = blend_test_case, .exp_regs = 1, .exp_result = 67.0 },
+        { .name = "Find Top Surface", .fn = find_top_surf_test_case, .exp_regs = 2, .exp_result = 67.0 }
     };
     bool consider_regs = true;
     int len = sizeof(cases) / sizeof(cases[0]);

@@ -56,6 +56,6 @@ int larger_arg_right(Node* root); // swap children with the largest args to the 
 Node* tree_to_vine(Node* root); // CLAUDE FUNCTION - "reassociation" optimization, which smashes a tree into a linked list
 double get_arg(EvalStack* s, double* registers, int offset, int arg_num); // gets argument from const args or register (dependign on op children)
 double get_const(EvalStack* s, int offset, int arg_num); // gets an op's consant args
-double evaluate_stack(EvalStack* finalStack, double x, double y, double z); // evaluates the stack given the inputs and coordinates
+double evaluate_stack(EvalStack* finalStack, int x, int y, int z); // evaluates the stack given the inputs and coordinates
 
 #endif
