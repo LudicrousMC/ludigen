@@ -43,7 +43,7 @@ tasks.register('buildNative', Exec) {
 	doLast {
 		providers.exec {
 			workingDir "./"
-			commandLine "cmake", "--build", "src/native/build"
+			commandLine "cmake", "--build", "src/native/build", "--target", "ludicrous_engine"
 		}.result.get()
 		copy {
 			from "src/native/build/output"

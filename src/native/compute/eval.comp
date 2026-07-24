@@ -14,21 +14,20 @@ layout (local_size_x = 64) in;
     int stackLen;
 } info;*/
 
-layout (std430, binding = 0) readonly buffer StackBuffer {
+/*layout (std430, binding = 0) readonly buffer StackBuffer {
     StackFrame data[];
-} stack;
+} stack;*/
 
-layout (std430, binding = 1) readonly buffer ConstArgsBuffer {
+layout (std430, set = 0, binding = 0) readonly buffer ConstArgsBuffer {
     double data[];
 } const_args;
 
-layout (std430, binding = 2) writeonly buffer OutputBuffer {
+layout (std430, set = 0, binding = 1) writeonly buffer OutputBuffer {
     double data[];
 } buf_out;
 
 void main() {
     uint index = gl_GlobalInvocationID.x;
-
     buf_out.data[index] = const_args.data[index];
 }
 

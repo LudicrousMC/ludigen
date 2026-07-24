@@ -4,13 +4,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.ArrayList;
 
 public class LudicrousEngineInstance {
     private final long ptr;
     private final LudicrousEngine engine;
 
     public LudicrousEngineInstance(long ptr) {
-        System.out.println(ptr);
         this.ptr = ptr;
         this.engine = new LudicrousEngine();
     }
@@ -26,5 +26,17 @@ public class LudicrousEngineInstance {
         spirv.put(shaderBytes);
         spirv.flip();
         engine.loadShader(this.ptr, spirv);
+    }
+
+    public void setDensityFunction(String json) {
+        engine.setDensityFunction(this.ptr, json);
+    }
+
+    public void setNoiseStates(ArrayList<NoiseStates.NormalNoiseState> noiseStates, ArrayList<NoiseStates.ImprovedNoiseState> noiseLevelStates) {
+        engine.setNoiseStates(this.ptr, noiseStates, noiseLevelStates);
+    }
+
+    public void evalDensityFunction() {
+        engine.evalDensityFunction(this.ptr);
     }
 }

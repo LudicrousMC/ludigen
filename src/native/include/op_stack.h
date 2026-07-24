@@ -18,7 +18,6 @@ struct StackFrame {
     // This allows sub ops to find constants through the main StackFrame, it makes identifying sub operations easier,
     // and allows sub ops to link back to their main op
     int16_t const_index;
-    uint8_t noise_index;
     uint8_t result_index;
 };
 

@@ -7,12 +7,12 @@
 #include "op_types.h"
 #include "op_stack.h"
 #include "stack_builder.h"
-#include "test_cases.h"
+#include "noise_gen.h"
 #include "util.h"
 
 #define MAX_OPS 30
 OpInfo op_table[MAX_OPS];
-int    op_count;
+int    op_count = 0;
 
 int max(int *arr, int n) {
     int m = arr[0];
@@ -43,10 +43,9 @@ OpInfo* lookup_op(int op_type) {
     return NULL;
 }
 
-int preorder_traversal_depth_count(Node* root) {
+static int preorder_traversal_depth_count(Node* root) {
     if (root->numChildren == 0) return 0;
     int finalDepths[root->numChildren];
-
     for (int i = 0; i < root->numChildren; i++) {
         if (root->allChildren[i]) finalDepths[i] = preorder_traversal_depth_count(root->allChildren[i]);
     }
@@ -56,7 +55,7 @@ int preorder_traversal_depth_count(Node* root) {
 }
 
 // Finds allocation requirements of op_stack and const_args for EvalStack
-EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
+static EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
     // Return requirements for leaf nodes that don't have children
     switch (root->operationType)
     {
@@ -64,6 +63,13 @@ EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
         return (EvalStackAllocReqs){0,1};
     case OP_Y_CLAMPED_GRAD:
         return (EvalStackAllocReqs){1,4};
+    case OP_NOISE:
+        return (EvalStackAllocReqs){1,3};
+    case OP_SHIFT_A:
+    case OP_SHIFT_B:
+        return (EvalStackAllocReqs){1,1};
+    case OP_OLD_BLENDED_NOISE:
+        return (EvalStackAllocReqs){1,5};
     default:
         break;
     }
@@ -73,19 +79,33 @@ EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
     // Account for ops that have extra constants
     switch (root->operationType)
     {
+    case OP_CLAMP:
+        reqs.const_args_len += 2;
+        break;
     case OP_SPLINE:
         if (root->values[0] == OP_SUBTYPE_SPLINE_POINT) {
             if (root->allChildren[0]->operationType == OP_CONST)
                 return (EvalStackAllocReqs){0,4}; // Omit spline point op if it holds a constant value
             reqs.const_args_len += 3; // derivative, location, and stack index constants
         } else if (root->values[0] == OP_SUBTYPE_SPLINE) {
-            reqs.const_args_len += 1; // number of points and stack return index constant
             reqs.op_stack_len++; // Extra return frame
         }
         break;
     case OP_FIND_TOP_SURFACE:
         reqs.const_args_len += 2;
         reqs.op_stack_len++;
+        break;
+    case OP_RANGE_CHOICE:
+        if (root->allChildren[0]->operationType != OP_CONST && root->allChildren[1]->operationType != OP_CONST)
+            reqs.op_stack_len++;
+        reqs.const_args_len += 3;
+        break;
+    case OP_INTERVAL_SELECT:
+        reqs.const_args_len += (root->values[0] * 2) + 1;
+        reqs.op_stack_len += root->values[0];
+        break;
+    case OP_SHIFTED_NOISE:
+        reqs.const_args_len += 3;
         break;
     default:
         break;
@@ -102,7 +122,7 @@ EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
     return reqs;
 }
 
-int generate_stack_recursive(EvalStack* evalStack, Node* node, int regPos) {
+static int generate_stack_recursive(EvalStack* evalStack, Node* node, int regPos) {
     if (node->operationType == OP_CONST) {
         // Add value to const_args and increment counter
         evalStack->const_args[evalStack->const_args_len++] = node->values[0];
@@ -137,11 +157,13 @@ EvalStack* generate_stack_wrapper(Node* node) {
     evalStack->max_reg = 0;
 
     generate_stack_recursive(evalStack, node, 0);
+    //printf("alloc reqs %d %d\n", evalStackAlloc.op_stack_len, evalStackAlloc.const_args_len);
+    //printf("real reqs %d %d\n", evalStack->op_stack_len, evalStack->const_args_len);
 
     return evalStack;
 }
 
-int spline_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+static int spline_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
     evalStack->op_stack[currentFrameIndex].const_index = -(currentFrameIndex + 1);
     int num_points = node->values[1];
     double constants[num_points * 3];
@@ -197,14 +219,14 @@ int spline_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, in
     return regPos;
 }
 
-int y_clamp_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+static int y_clamp_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
     evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
     for (int i = 0; i < 4; i++)
         evalStack->const_args[evalStack->const_args_len++] = node->values[i];
     return regPos;
 }
 
-int find_top_surface_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+static int find_top_surface_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
     evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
     for (int i = 0; i < 2; i++)
         evalStack->const_args[evalStack->const_args_len++] = node->values[i];
@@ -215,22 +237,102 @@ int find_top_surface_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node
     evalStack->op_stack[currentFrameIndex].arg_indexes[2] = evalStack->op_stack_len;
 
     // Find top surface early return condition
-    evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){.op_type = OP_FIND_TOP_SURFACE, .const_index = -(currentFrameIndex + 1)};
+    evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){ .op_type = OP_FIND_TOP_SURFACE, .const_index = -(currentFrameIndex + 1) };
     // Upper bound arg
     evalStack->op_stack[currentFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos);
 
     return regPos;
 }
 
+static int range_choice_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    evalStack->op_stack_len--; // Undo initial frame add
+    // Generate when out of range branch
+    int outOfRangeIndex = generate_stack_recursive(evalStack, node->allChildren[2], regPos);
+    int outOfRangePCIndex = evalStack->op_stack_len;
 
-int one_arg_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    // Generate in range argument
+    if (node->allChildren[0]->operationType != OP_CONST && node->allChildren[1]->operationType != OP_CONST)
+        evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){ .op_type = OP_RANGE_CHOICE, .const_index = -(currentFrameIndex + 1) };
+    int inRangeIndex = generate_stack_recursive(evalStack, node->allChildren[1], regPos);
+
+    size_t mainFrameIndex = evalStack->op_stack_len;
+    evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){ .op_type = OP_RANGE_CHOICE, .const_index = evalStack->const_args_len, .result_index = regPos };
+    evalStack->const_args[evalStack->const_args_len++] = node->values[0]; // min inclusive
+    evalStack->const_args[evalStack->const_args_len++] = node->values[1]; // max exclusive
+    evalStack->const_args[evalStack->const_args_len++] = currentFrameIndex; // Return PC index
+    // Input argument
+    evalStack->op_stack[mainFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos);
+    evalStack->op_stack[mainFrameIndex].arg_indexes[1] = inRangeIndex;
+    evalStack->op_stack[mainFrameIndex].arg_indexes[2] = outOfRangeIndex < 0 ? outOfRangeIndex : outOfRangePCIndex;
+
+    return regPos;
+}
+
+static int interval_select_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    evalStack->op_stack_len--; // Undo initial frame add
+    int num_thresholds = node->values[0];
+    int num_functions = num_thresholds + 1;
+    int threshold_indexes[num_functions];
+    for (int i = 0; i < num_functions; i++) {
+        int threshold_frame_index = evalStack->op_stack_len;
+
+        int threshold_index = generate_stack_recursive(evalStack, node->allChildren[i + 1], regPos); // Threshold functions
+        if (threshold_index < 0) {
+            evalStack->op_stack_len--; // Undo frame add if threshold value is constant
+        } else if (threshold_index >= 0) {
+            threshold_indexes[i] = evalStack->op_stack_len;
+        }
+        evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){ .op_type = OP_INTERVAL_SELECT, .const_index = -(currentFrameIndex + 1), .result_index = regPos };
+    }
+
+    size_t mainFrameIndex = evalStack->op_stack_len - 1;
+    // Replace last frame
+    evalStack->op_stack[mainFrameIndex] = (StackFrame){ .op_type = OP_INTERVAL_SELECT, .const_index = evalStack->const_args_len, .result_index = regPos };
+    for (int i = 0; i < num_thresholds; i++) {
+        evalStack->const_args[evalStack->const_args_len++] = node->values[i + 1]; // threshold locations
+    }
+    for (int i = 0; i < num_functions; i++) {
+        evalStack->const_args[evalStack->const_args_len++] = threshold_indexes[i];
+    }
+
+    // Input value
+    evalStack->op_stack[mainFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos);
+    evalStack->op_stack[mainFrameIndex].arg_indexes[1] = num_thresholds;
+    evalStack->op_stack[mainFrameIndex].arg_indexes[2] = currentFrameIndex;
+
+    return regPos;
+}
+
+static int noise_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
+    evalStack->const_args[evalStack->const_args_len++] = node->values[0]; // Noise state index
+    evalStack->const_args[evalStack->const_args_len++] = node->values[1]; // xz scale value
+    evalStack->const_args[evalStack->const_args_len++] = node->values[2]; // y scale value
+    return regPos;
+}
+
+static int shift_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
+    evalStack->const_args[evalStack->const_args_len++] = node->values[0]; // Noise state index
+    return regPos;
+}
+
+static int old_blended_noise_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
+    for (int i = 0; i < 5; i++) {
+        evalStack->const_args[evalStack->const_args_len++] = node->values[i];
+    }
+    return regPos;
+}
+
+static int one_arg_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
     if (node->allChildren[0]) {
         evalStack->op_stack[currentFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos);
     }
     return regPos;
 }
 
-int two_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+static int two_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
     if (node->allChildren[0] && node->allChildren[1]) {
         bool switchArgs = node->allChildren[0]->depth > node->allChildren[1]->depth;
         evalStack->op_stack[currentFrameIndex].arg_indexes[switchArgs] = generate_stack_recursive(evalStack, switchArgs ? node->allChildren[1] : node->allChildren[0], regPos + 1);
@@ -239,25 +341,50 @@ int two_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, 
     return regPos;
 }
 
-int three_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
-    if (node->allChildren[0] && node->allChildren[1] && node->allChildren[2]) {
-        Node* child[3];
-        for (int i = 0; i < 3; i++)
-            child[i] = node->allChildren[i];
-        
-        for (int i = 0; i < 2; i++) {
-            for (int j = 0; j < 2 - i; j++) {
-                if (child[j]->depth > child[j + 1]->depth) {
-                    Node* temp = child[j + 1];
-                    child[j + 1] = child[j];
-                    child[j] = temp;
-                }
+static int clamp_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
+    evalStack->const_args[evalStack->const_args_len++] = node->values[0]; // min value
+    evalStack->const_args[evalStack->const_args_len++] = node->values[1]; // max value
+    return one_arg_op_gen(evalStack, currentFrameIndex, node, regPos);
+}
+
+static int shifted_noise_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
+    evalStack->op_stack[currentFrameIndex].const_index = evalStack->const_args_len;
+    evalStack->const_args[evalStack->const_args_len++] = node->values[0]; // noise index
+    evalStack->const_args[evalStack->const_args_len++] = node->values[1]; // xz_scale
+    evalStack->const_args[evalStack->const_args_len++] = node->values[2]; // y_scale
+
+    // ISSUE: Interpreter must know which arg is x, y, and z.
+    // Re-arranging arg positions to reduce registers causes this issue.
+    // Either a indicator must be added to identify which arg is which or
+    // we just don't re-arrange since it doesn't seem to reduce reg usage.
+    /*
+    Node* child[3];
+    for (int i = 0; i < 3; i++)
+        child[i] = node->allChildren[i];
+
+    for (int i = 0; i < 2; i++) {
+        for (int j = 0; j < 2 - i; j++) {
+            if (child[j]->depth > child[j + 1]->depth) {
+                Node* temp = child[j + 1];
+                child[j + 1] = child[j];
+                child[j] = temp;
             }
         }
-        
-        for (int i = 0; i < 3; i++)
-            evalStack->op_stack[currentFrameIndex].arg_indexes[i] = generate_stack_recursive(evalStack, node->allChildren[i], regPos + (2 - i));
     }
+
+    for (int i = 0; i < 3; i++)
+        evalStack->op_stack[currentFrameIndex].arg_indexes[i] = generate_stack_recursive(evalStack, node->allChildren[i], regPos + (2 - i));
+    */
+    for (int i = 0; i < 3; i++) {
+        size_t index = generate_stack_recursive(evalStack, node->allChildren[i], regPos + (2 - i));
+        evalStack->op_stack[currentFrameIndex].arg_indexes[i] = index;
+        // If child was a operation, increment child register position
+        /*if (index >= 0) {
+            child_reg++;
+        }*/
+    }
+
     return regPos;
 }
 
@@ -278,6 +405,22 @@ Node* create_leaf(int op_type, double* theData) {
         n->generate_stack_recursive_from_op = y_clamp_op_gen;
         n->values = (double*)malloc(4 * sizeof(double));
         memcpy(n->values, theData, 4 * sizeof(double));
+        break;
+    case OP_NOISE:
+        n->generate_stack_recursive_from_op = noise_op_gen;
+        n->values = (double*)malloc(3 * sizeof(double));
+        memcpy(n->values, theData, 3 * sizeof(double));
+        break;
+    case OP_SHIFT_A:
+    case OP_SHIFT_B:
+        n->generate_stack_recursive_from_op = shift_op_gen;
+        n->values = (double*)malloc(sizeof(double));
+        n->values[0] = theData[0];
+        break;
+    case OP_OLD_BLENDED_NOISE:
+        n->generate_stack_recursive_from_op = old_blended_noise_op_gen;
+        n->values = (double*)malloc(5 * sizeof(double));
+        memcpy(n->values, theData, 5 * sizeof(double));
         break;
     case OP_BLEND_OFFSET:
         n->operationType = OP_CONST;
@@ -325,13 +468,38 @@ Node* create_op(int op_type, Node** theChildren, double* theData) {
         n->values[0] = theData[0]; // cell height
         n->values[1] = theData[1]; // lower bound
         break;
+    case OP_RANGE_CHOICE:
+        n->generate_stack_recursive_from_op = range_choice_op_gen;
+        n->allChildren = (Node**)malloc(3 * sizeof(Node*));
+        n->allChildren[0] = theChildren[0]; // input
+        n->allChildren[1] = theChildren[1]; // when in range
+        n->allChildren[2] = theChildren[2]; // when out of range
+        n->numChildren = 3;
+        n->values = (double*)malloc(2 * sizeof(double));
+        n->values[0] = theData[0]; // min inclusive
+        n->values[1] = theData[1]; // max exclusive
+        break;
+    case OP_INTERVAL_SELECT:
+        n->generate_stack_recursive_from_op = interval_select_op_gen;
+        int num_thresholds = theData[0];
+        int num_children = num_thresholds + 2;
+        n->allChildren = (Node**)malloc(num_children * sizeof(Node*)); // input plus threshold functions
+        memcpy(n->allChildren, theChildren, num_children * sizeof(Node*));
+        n->numChildren = num_children;
+        n->values = (double*)malloc((num_thresholds + 1) * sizeof(double)); // number of thresholds plus threshold locations
+        memcpy(n->values, theData, (num_thresholds + 1) * sizeof(double));
+        break;
     case OP_SHIFTED_NOISE:
-        n->generate_stack_recursive_from_op = three_args_op_gen;
+        n->generate_stack_recursive_from_op = shifted_noise_op_gen;
         n->allChildren = (Node**)malloc(3 * sizeof(Node*));
         n->allChildren[0] = theChildren[0];
         n->allChildren[1] = theChildren[1];
         n->allChildren[2] = theChildren[2];
         n->numChildren = 3;
+        n->values = (double*)malloc(3 * sizeof(double));
+        n->values[0] = theData[0]; // noise index
+        n->values[1] = theData[1]; // xz scale
+        n->values[2] = theData[2]; // y scale
         break;
     case OP_ABS:
     case OP_SQUARE:
@@ -340,7 +508,6 @@ Node* create_op(int op_type, Node** theChildren, double* theData) {
     case OP_QUARTER_NEGATIVE:
     case OP_INVERT:
     case OP_SQUEEZE:
-    case OP_CLAMP:
     case OP_BLEND_DENSITY:
     case OP_INTERPOLATED:
     case OP_CACHE_ONCE:
@@ -351,6 +518,15 @@ Node* create_op(int op_type, Node** theChildren, double* theData) {
         n->allChildren = (Node**)malloc(sizeof(Node*));
         n->allChildren[0] = theChildren[0];
         n->numChildren = 1;
+        break;
+    case OP_CLAMP:
+        n->generate_stack_recursive_from_op = clamp_op_gen;
+        n->allChildren = (Node**)malloc(sizeof(Node*));
+        n->allChildren[0] = theChildren[0];
+        n->numChildren = 1;
+        n->values = (double*)malloc(2 * sizeof(double));
+        n->values[0] = theData[0];
+        n->values[1] = theData[1];
         break;
     case OP_SPLINE:
         n->generate_stack_recursive_from_op = spline_op_gen;
@@ -454,14 +630,6 @@ Node* tree_to_vine(Node* root) {
     while (rest != NULL) {
         if (rest->numChildren < 2) break; // Prevent bad child dereferences
 
-        //int should_rotate = rotation_is_safe(rest);
-
-        /*if (should_rotate) {
-            Node* left_child = rest->allChildren[0];
-            if (left_child && left_child->numChildren > rest->numChildren) {
-                should_rotate = 0;
-            }
-        }*/
         if (rotation_is_safe(rest)) {
             rotate_right(tail);
             rest = tail->allChildren[1];   // re-examine the newly promoted node
@@ -493,8 +661,8 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
 
     for (int i = finalStack->op_stack_len - 1; i >= 0; i--)
     {
-        double arg1;
-        double arg2;
+        printf("%d %d %d\n", finalStack->op_stack[i].op_type, finalStack->op_stack[i].result_index, i);
+        fflush(stdout);
         switch (finalStack->op_stack[i].op_type)
         {
         case OP_ADD:
@@ -503,44 +671,52 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
         case OP_MUL:
             regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0) * get_arg(finalStack, regArray, i, 1);
             break;
-        case OP_MIN:
-            arg1 = get_arg(finalStack, regArray, i, 0);
-            arg2 = get_arg(finalStack, regArray, i, 1);
+        case OP_MIN: {
+            double arg1 = get_arg(finalStack, regArray, i, 0);
+            double arg2 = get_arg(finalStack, regArray, i, 1);
             regArray[finalStack->op_stack[i].result_index] = arg1 < arg2 ? arg1 : arg2;
             break;
-        case OP_MAX:
-            arg1 = get_arg(finalStack, regArray, i, 0);
-            arg2 = get_arg(finalStack, regArray, i, 1);
+        }
+        case OP_MAX: {
+            double arg1 = get_arg(finalStack, regArray, i, 0);
+            double arg2 = get_arg(finalStack, regArray, i, 1);
             regArray[finalStack->op_stack[i].result_index] = arg1 > arg2 ? arg1 : arg2;
             break;
+        }
         case OP_ABS:
             regArray[finalStack->op_stack[i].result_index] = fabs(get_arg(finalStack, regArray, i, 0));
             break;
-        case OP_SQUARE:
-            arg1 = get_arg(finalStack, regArray, i, 0);
+        case OP_SQUARE: {
+            double arg1 = get_arg(finalStack, regArray, i, 0);
             regArray[finalStack->op_stack[i].result_index] = arg1 * arg1;
             break;
-        case OP_CUBE:
-            arg1 = get_arg(finalStack, regArray, i, 0);
+        }
+        case OP_CUBE: {
+            double arg1 = get_arg(finalStack, regArray, i, 0);
             regArray[finalStack->op_stack[i].result_index] = arg1 * arg1 * arg1;
             break;
-        case OP_HALF_NEGATIVE:
-            arg1 = get_arg(finalStack, regArray, i, 0);
+        }
+        case OP_HALF_NEGATIVE: {
+            double arg1 = get_arg(finalStack, regArray, i, 0);
             regArray[finalStack->op_stack[i].result_index] = arg1 < 0.0 ? arg1 * 0.5 : arg1;
             break;
+        }
         case OP_INVERT:
             regArray[finalStack->op_stack[i].result_index] = 1.0 / get_arg(finalStack, regArray, i, 0);
             break;
-        case OP_QUARTER_NEGATIVE:
-            arg1 = get_arg(finalStack, regArray, i, 0);
+        case OP_QUARTER_NEGATIVE: {
+            double arg1 = get_arg(finalStack, regArray, i, 0);
             regArray[finalStack->op_stack[i].result_index] = arg1 < 0.0 ? arg1 * 0.25 : arg1;
             break;
+        }
         case OP_SQUEEZE:
             double clamped_val = fmin(fmax(get_arg(finalStack, regArray, i, 0), -1.0), 1.0);
             regArray[finalStack->op_stack[i].result_index] = (clamped_val / 2.0) - ((clamped_val * clamped_val * clamped_val) / 24.0);
             break;
         case OP_CLAMP:
-            regArray[finalStack->op_stack[i].result_index] = fmin(fmax(get_arg(finalStack, regArray, i, 0), -1.0), 1.0);
+            double minimum = get_const(finalStack, i, 0);
+            double maximum = get_const(finalStack, i, 1);
+            regArray[finalStack->op_stack[i].result_index] = fmin(fmax(get_arg(finalStack, regArray, i, 0), minimum), maximum);
             break;
         case OP_Y_CLAMPED_GRAD:
             double fromY = get_const(finalStack, i, 0);
@@ -591,9 +767,80 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                 }
             }
             break;
-        case OP_SHIFTED_NOISE:
-            regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1) + get_arg(finalStack, regArray, i, 2);
+        case OP_RANGE_CHOICE:
+            if (finalStack->op_stack[i].const_index >= 0) {
+                double input = get_arg(finalStack, regArray, i, 0);
+                double min_incl = get_const(finalStack, i, 0);
+                double max_excl = get_const(finalStack, i, 1);
+                if (input < max_excl && input >= min_incl) {
+                    int inRangeIndex = finalStack->op_stack[i].arg_indexes[1];
+                    if (inRangeIndex < 0) {
+                        regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 1);
+                        i = get_const(finalStack, i, 2);
+                    }
+                } else {
+                    int outOfRangeIndex = finalStack->op_stack[i].arg_indexes[2];
+                    if (outOfRangeIndex < 0) {
+                        regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 2);
+                        i = get_const(finalStack, i, 2);
+                    } else {
+                        i = outOfRangeIndex;
+                    }
+                }
+            } else {
+                i = -(finalStack->op_stack[i].const_index + 1);
+            }
             break;
+        case OP_INTERVAL_SELECT:
+            if (finalStack->op_stack[i].const_index >= 0) {
+                int num_thresholds = finalStack->op_stack[i].arg_indexes[1];
+                double input = get_arg(finalStack, regArray, i, 0);
+                // Find interval range
+                for (int j = 0; j <= num_thresholds; j++) {
+                    if (j == num_thresholds || input < get_const(finalStack, i, j)) {
+                        int threshold_index = get_const(finalStack, i, num_thresholds + j);
+                        if (threshold_index < 0) {
+                            regArray[finalStack->op_stack[i].result_index] = finalStack->const_args[(-threshold_index) - 1];
+                            i = finalStack->op_stack[i].arg_indexes[2];
+                        } else {
+                            i = threshold_index;
+                        }
+                        break;
+                    }
+                }
+            } else {
+                i = -(finalStack->op_stack[i].const_index + 1);
+            }
+            break;
+        case OP_NOISE: {
+            int noise_index = get_const(finalStack, i, 0);
+            double xz_scale = get_const(finalStack, i, 1);
+            double y_scale = get_const(finalStack, i, 2);
+            regArray[finalStack->op_stack[i].result_index] = generate_normal_noise(
+                &finalStack->noise_states[noise_index],
+                finalStack->noise_levels,
+                (double)x * xz_scale,
+                (double)y * y_scale,
+                (double)z * xz_scale
+            );
+            break;
+        }
+        case OP_SHIFTED_NOISE: {
+            int noise_index = get_const(finalStack, i, 0);
+            double xz_scale = get_const(finalStack, i, 1);
+            double y_scale = get_const(finalStack, i, 2);
+            double shifted_x = ((double)x * xz_scale) + get_arg(finalStack, regArray, i, 0);
+            double shifted_y = ((double)y * y_scale) + get_arg(finalStack, regArray, i, 1);
+            double shifted_z = ((double)z * xz_scale) + get_arg(finalStack, regArray, i, 2);
+            regArray[finalStack->op_stack[i].result_index] = generate_normal_noise(
+                &finalStack->noise_states[noise_index],
+                finalStack->noise_levels,
+                shifted_x,
+                shifted_y,
+                shifted_z
+            );
+            break;
+        }
         case OP_SPLINE:
             // If const_index is non negative, treat as main spline, else treat as spline point
             if (finalStack->op_stack[i].const_index >= 0) {
@@ -613,9 +860,9 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                     }
                 }
                 point_index -= 1;
-                point_index *= 3; // Convert to 3 value indexing
 
                 if (point_index < 0 || point_index == num_points - 1) {
+                    point_index *= 3; // Convert to 3 value indexing
                     // If first point or last point (single point)
                     if (point_index < 0)
                         point_index = 0;
@@ -636,6 +883,7 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                         i = point_PC;
                     }
                 } else {
+                    point_index *= 3; // Convert to 3 value indexing
                     // If between points, interpolate (double point)
                     int point1_PC = get_const(finalStack, i, point_index + 2);
                     int point2_PC = get_const(finalStack, i, point_index + 5);
@@ -649,6 +897,9 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                         double point2_loc = get_const(finalStack, i, point_index + 3);
                         double point2_deriv = get_const(finalStack, i, point_index + 4);
                         double point2_val = finalStack->const_args[abs(point2_PC) - 1];
+                        printf("spline 1 de %lf, lo %lf, va %lf\n", point1_deriv, point1_loc, point1_val);
+                        printf("spline 2 de %lf, lo %lf, va %lf\n", point2_deriv, point2_loc, point2_val);
+                        fflush(stdout);
 
                         // Store final value and set stack offset to return frame
                         regArray[finalStack->op_stack[i].result_index] = spline_compute(point1_loc, point1_deriv, point1_val, point2_loc, point2_deriv, point2_val, coord);
@@ -665,6 +916,8 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                     }
                 }
             } else {
+                printf("spline point\n");
+                fflush(stdout);
                 // Spline point case
                 int main_spline_reg_index = finalStack->op_stack[i].result_index;
                 int main_spline_stack_index = finalStack->op_stack[i].arg_indexes[0];
@@ -711,44 +964,44 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
         case OP_CACHE_ALL_IN_CELL:
             regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0);
             break;
+        case OP_SHIFT_A: {
+            int noise_index = get_const(finalStack, i, 0);
+            regArray[finalStack->op_stack[i].result_index] = 4.0 * generate_normal_noise(
+                &finalStack->noise_states[noise_index],
+                finalStack->noise_levels,
+                (double)x * 0.25,
+                0.0,
+                (double)z * 0.25
+            );
+            break;
+        }
+        case OP_SHIFT_B: {
+            int noise_index = get_const(finalStack, i, 0);
+            regArray[finalStack->op_stack[i].result_index] = 4.0 * generate_normal_noise(
+                &finalStack->noise_states[noise_index],
+                finalStack->noise_levels,
+                (double)z * 0.25,
+                (double)x * 0.25,
+                0.0
+            );
+            break;
+        }
+        case OP_OLD_BLENDED_NOISE:
+            double smear_scale_mult = get_const(finalStack, i, 0);
+            double xz_factor = get_const(finalStack, i, 1);
+            double xz_mult = get_const(finalStack, i, 2) * 684.412;
+            double y_factor = get_const(finalStack, i, 3);
+            double y_mult = get_const(finalStack, i, 4) * 684.412;
+            regArray[finalStack->op_stack[i].result_index] = 0.05283727086562935;
+            break;
         default:
             break;
         }
-        // printf("%lf %lf %lf %lf i %d\n", regArray[0], regArray[1], regArray[2], regArray[3], i);
+        for (int j = 0; j < finalStack->max_reg+1; j++)
+            printf("%lf ", regArray[j]);
+        printf("%d %d\n", finalStack->op_stack[i].op_type, i);
+        fflush(stdout);
     }
     // printf("%lf\n", regArray[0]);
     return regArray[0];
-}
-
-int main() {
-    register_op(OP_ADD, 2, 1);                  // associative
-    register_op(OP_MUL, 3, 1);                  // associative
-    register_op(OP_MIN, 1, 1);                  // associative
-    register_op(OP_MAX, 1, 1);                  // associative
-    //register_op(OP_ABS, 0, 0);                  // non associative
-    //register_op(OP_SQUARE, 0, 0);               // non associative
-    //register_op(OP_CUBE, 0,0);                  // non associative
-    //register_op(OP_HALF_NEGATIVE, 0, 0);        // non associative
-    //register_op(OP_QUARTER_NEGATIVE, 0, 0);     // non associative
-    //register_op(OP_INVERT, 0, 0);               // non associative
-    //register_op(OP_SQUEEZE, 0, 0);              // non associative
-    //register_op(OP_CLAMP, 0, 0);                // non associative
-    //register_op(OP_Y_CLAMPED_GRAD, 0, 0);       // non associative
-    //register_op(OP_SHIFTED_NOISE, 10, 0);       // non associative - FIX THIS EVALUATION, YOU DAMNNED TWAT
-    //register_op(OP_SPLINE, 0, 0);               // non associative
-    //register_op(OP_BLEND_DENSITY, 0, 0);        // non associative
-    //register_op(OP_BLEND_OFFSET, 0, 0);         // non associative
-    //register_op(OP_BLEND_ALPHA, 0, 0);          // non associative
-    //register_op(OP_CACHE_ONCE, 0, 0);           // non associative
-    //register_op(OP_FLAT_CACHE, 0, 0);           // non associative
-    //register_op(OP_CACHE_2D, 0, 0);             // non associative
-    //register_op(OP_CACHE_ALL_IN_CELL, 0, 0);    // non associative
-    //register_op(OP_END_ISLANDS, 0, 0);          // non associative
-
-    // Node* root = tree_to_vine(associativity_test_case());
-    // EvalStack* theStack = generate_stack_wrapper(root);
-    // double resultOfOps = evaluate_stack(theStack);
-    run_all_test_cases();
-
-    return 0;
 }

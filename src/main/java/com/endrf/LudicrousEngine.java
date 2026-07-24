@@ -9,6 +9,7 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 
 public class LudicrousEngine {
     static {
@@ -38,4 +39,10 @@ public class LudicrousEngine {
     }
 
     native void loadShader(long instance, ByteBuffer spirv);
+
+    native void setDensityFunction(long instance, String fnJson);
+
+    native void setNoiseStates(long instance, ArrayList<NoiseStates.NormalNoiseState> noiseStates, ArrayList<NoiseStates.ImprovedNoiseState> noiseLevelStates);
+
+    native void evalDensityFunction(long instance);
 }

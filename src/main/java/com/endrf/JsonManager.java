@@ -3,6 +3,11 @@ package com.endrf;
 import com.endrf.operations.*;
 import com.google.gson.*;
 import net.minecraft.server.Main;
+import net.minecraft.util.RandomSource;
+import net.minecraft.world.level.levelgen.LegacyRandomSource;
+import net.minecraft.world.level.levelgen.PositionalRandomFactory;
+import net.minecraft.world.level.levelgen.WorldgenRandom;
+import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
 
 import java.io.File;
 import java.io.IOException;
@@ -16,16 +21,14 @@ import java.util.jar.JarFile;
 public class JsonManager {
     // Key = Density Function data path
     public final static Map<String, OperationArg> densityFunctions = new HashMap<>();
-    // Key = Dimension/type
-    public final static Map<String, OperationArg> finalDensityFunctions = new HashMap<>();
-    private final GsonBuilder defaultGsonBuilder = new GsonBuilder()
+    public final Map<String, NoiseSettings> worldTypes = new HashMap<>();
+    public final Map<String, NoiseParameter> noiseParams = new HashMap<>();
+    private final static GsonBuilder defaultGsonBuilder = new GsonBuilder()
             .registerTypeAdapter(OperationArg.class, new OperationDeserializer())
             .registerTypeAdapter(Spline.SplineArg.class, new Spline.SplineDeserializer())
-            .registerTypeAdapter(OperationArg.class, new OperationSerializer())
             .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES);
-    private final Gson gson = defaultGsonBuilder.create();
-    private final Gson gsonConstruct = defaultGsonBuilder
-            .registerTypeAdapter(OperationArg.class, new ConstructionSerializer())
+    private final static Gson gson = defaultGsonBuilder
+            .registerTypeAdapter(OperationArg.class, new OperationSerializer())
             .create();
 
     public JsonManager(Class<?> anchorClass) throws Exception {
@@ -52,17 +55,30 @@ public class JsonManager {
                 } catch (RuntimeException | IOException e) {
                     throw new RuntimeException(e);
                 }
-                JsonObject obj = JsonParser.parseString(json).getAsJsonObject();
-                finalDensityFunctions.put(
+                worldTypes.put(
                         f.replaceFirst("data/minecraft/worldgen/noise_settings/", "")
                                 .replaceFirst(".json", ""),
-                        gson.fromJson(obj.get("noise_router")
-                                .getAsJsonObject().get("final_density").getAsJsonObject(), OperationArg.class)
+                        gson.fromJson(json, NoiseSettings.class)
+                );
+            } else if (f.startsWith("data/minecraft/worldgen/noise/")) {
+                String json;
+                try (InputStream in = Main.class.getResourceAsStream("/" + f)) {
+                    if (in == null) throw new RuntimeException("Not found");
+                    json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                } catch (RuntimeException | IOException e) {
+                    throw new RuntimeException(e);
+                }
+                noiseParams.put(
+                        "minecraft:" + f.replaceFirst("data/minecraft/worldgen/noise/", "")
+                                .replaceFirst(".json", ""),
+                        new Gson().fromJson(json, NoiseParameter.class)
                 );
             }
         }
-        String finalDensity = gsonConstruct.toJson(finalDensityFunctions.get("overworld"));
-        System.out.println(finalDensity.length());
+        // Ensure noises for all density functions are generated
+        for (NoiseSettings s : worldTypes.values()) {
+            s.constructDensityFunctions(noiseParams);
+        }
     }
 
     private static List<String> findJsonFiles(Class<?> anchorClass) throws Exception {
@@ -84,5 +100,37 @@ public class JsonManager {
             }
         }
         return filePaths;
+    }
+
+    public static class NoiseSettings {
+        public boolean legacyRandomSource;
+        public HashMap<String, OperationArg> noiseRouter;
+        public HashMap<String, String> jsonDensityFunctions;
+
+        public void constructDensityFunctions(Map<String, NoiseParameter> noiseParams) {
+            this.jsonDensityFunctions = new HashMap<>();
+            PositionalRandomFactory rand = legacyRandomSource
+                    ? WorldgenRandom.Algorithm.LEGACY.newInstance(LudiGen.seed.get()).forkPositional()
+                    : WorldgenRandom.Algorithm.XOROSHIRO.newInstance(LudiGen.seed.get()).forkPositional();
+            for (Map.Entry<String, OperationArg> e: this.noiseRouter.entrySet()) {
+                String json = new GsonBuilder()
+                        //.registerTypeAdapter(OperationArg.class, new ConstructionSerializer(rand, noiseParams))
+                        .registerTypeAdapter(ExternalArg.class, new ExternalArgSerializer())
+                        .registerTypeAdapter(Noise.class, new NoiseSerializer(rand, noiseParams))
+                        .registerTypeAdapter(ShiftedNoise.class, new ShiftedNoiseSerializer(rand, noiseParams))
+                        .registerTypeAdapter(ShiftA.class, new ShiftASerializer(rand, noiseParams))
+                        .registerTypeAdapter(ShiftB.class, new ShiftBSerializer(rand, noiseParams))
+                        .registerTypeAdapter(ConstantArg.class, new ConstantArgSerializer())
+                        .setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES)
+                        .create()
+                        .toJson(e.getValue());
+                jsonDensityFunctions.put(e.getKey(), json);
+            }
+        }
+    }
+
+    public static class NoiseParameter {
+        public int firstOctave;
+        public double[] amplitudes;
     }
 }

@@ -1,16 +1,4 @@
-#include <stdbool.h>
-#include "op_types.h"
-#include "op_stack.h"
-#include "stack_builder.h"
 #include "util.h"
-
-double lerp(double pos, double x, double y) {
-    return x + (pos * (y - x));
-}
-
-double inverse_lerp(double pos, double x, double y) {
-    return (pos - x) / (y - x);
-}
 
 double clamped_map(
     double pos1,

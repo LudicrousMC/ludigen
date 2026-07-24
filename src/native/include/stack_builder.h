@@ -2,6 +2,8 @@
 #define STACK_BUILDER_H
 
 #include <stddef.h>
+#include "op_stack.h"
+#include "noise_gen.h"
 
 typedef struct OpInfo {
     int             op_type;
@@ -15,6 +17,8 @@ typedef struct EvalStack {
     size_t max_reg;
     double* const_args;
     size_t const_args_len;
+    NormalNoise* noise_states;
+    ImprovedNoise* noise_levels;
 } EvalStack;
 
 typedef struct EvalStackAllocReqs {
@@ -38,24 +42,15 @@ typedef struct Node {
 int max(int *arr, int n); // returns the max from an array of n numbers
 void register_op(int op_type, int priority, int associative); // registers a new operation
 OpInfo* lookup_op(int op_type); // looks up an operation
-int preorder_traversal_depth_count(Node* root); // preorder traversal of tree and labelling of depths
-EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root); // preorder traversal to determine allocation sizes of EvalStack arrays
-int generate_stack_recursive(EvalStack* evalStack, Node* node, int regPos); // recursive function to generate evaluation stack
 EvalStack* generate_stack_wrapper(Node* node); // wrapper function to generate evaluation stack
-int spline_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for the spline operation
-int y_clamp_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for the y clamp gradient operation
-int find_top_surface_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for the find top surface operation
-int one_arg_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for a one arg operation
-int two_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for a two arg operation
-int three_args_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos); // generates stack for a three arg operation
 Node* create_leaf(int op_type, double* theData); // creates a leaf node with data
 Node* create_op(int op_type, Node** theChildren, double* theData); // creates an operation node with children
 int rotation_is_safe(Node* rest); // CLAUDE FUNCTION - determines whether or not a child is safe to rotate
 void rotate_right(Node* tail); // CLAUDE FUNCTION - rotates a child node
 int larger_arg_right(Node* root); // swap children with the largest args to the right
 Node* tree_to_vine(Node* root); // CLAUDE FUNCTION - "reassociation" optimization, which smashes a tree into a linked list
-double get_arg(EvalStack* s, double* registers, int offset, int arg_num); // gets argument from const args or register (dependign on op children)
-double get_const(EvalStack* s, int offset, int arg_num); // gets an op's consant args
+double get_arg(EvalStack* s, double* registers, int offset, int arg_num); // gets argument from const args or register (depending on op children)
+double get_const(EvalStack* s, int offset, int arg_num); // gets an op's constant args
 double evaluate_stack(EvalStack* finalStack, int x, int y, int z); // evaluates the stack given the inputs and coordinates
 
 #endif

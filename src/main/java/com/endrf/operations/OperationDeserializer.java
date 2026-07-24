@@ -5,7 +5,7 @@ import java.lang.reflect.Type;
 import java.util.HashSet;
 
 public class OperationDeserializer implements JsonDeserializer<OperationArg> {
-    //static HashSet<String> noiseTypes = new HashSet<>();
+    static HashSet<String> noiseTypes = new HashSet<>();
 
     @Override
     public OperationArg deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context) {
@@ -21,10 +21,18 @@ public class OperationDeserializer implements JsonDeserializer<OperationArg> {
         String type = obj.get("type").getAsString();
 
         /*switch (type) {
-            case Noise.TYPE, ShiftB.TYPE, ShiftedNoise.TYPE, ShiftA.TYPE, OldBlendedNoise.TYPE -> {
-                if (!noiseTypes.contains(json.toString())) {
-                    noiseTypes.add(json.toString());
-                    System.out.println("noise: " + json + " " + noiseTypes.size());
+            case Noise.TYPE, ShiftedNoise.TYPE -> {
+                String noise = obj.get("noise").getAsString();
+                if (!noiseTypes.contains(noise)) {
+                    noiseTypes.add(noise);
+                    System.out.println("noise: " + noise + " " + noiseTypes.size());
+                }
+            }
+            case ShiftA.TYPE, ShiftB.TYPE -> {
+                String noise = obj.get("argument").getAsString();
+                if (!noiseTypes.contains(noise)) {
+                    noiseTypes.add(noise);
+                    System.out.println("noise: " + noise + " " + noiseTypes.size());
                 }
             }
         }*/
@@ -38,9 +46,11 @@ public class OperationDeserializer implements JsonDeserializer<OperationArg> {
             case Cube.TYPE -> context.deserialize(json, Cube.class);
             case HalfNegative.TYPE -> context.deserialize(json, HalfNegative.class);
             case QuarterNegative.TYPE -> context.deserialize(json, QuarterNegative.class);
+            case Invert.TYPE -> context.deserialize(json, Invert.class);
             case Squeeze.TYPE -> context.deserialize(json, Squeeze.class);
             case Clamp.TYPE -> context.deserialize(json, Clamp.class);
             case YClampedGradient.TYPE -> context.deserialize(json, YClampedGradient.class);
+            case FindTopSurface.TYPE -> context.deserialize(json, FindTopSurface.class);
             case RangeChoice.TYPE -> context.deserialize(json, RangeChoice.class);
             case IntervalSelect.TYPE -> context.deserialize(json, IntervalSelect.class);
             case Noise.TYPE -> context.deserialize(json, Noise.class);

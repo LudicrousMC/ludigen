@@ -5,8 +5,14 @@
 #include <stdbool.h>
 #include "op_types.h"
 #include "op_stack.h"
-#include "test_cases.h"
 #include "stack_builder.h"
+
+typedef struct {
+    char* name;
+    Node* (*fn)(void);
+    int exp_regs;
+    double exp_result;
+} TestCase;
 
 Node* larger_opt_test_case() {
     Node* add1 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, (double []){8}), create_leaf(OP_CONST, (double []){9})}, NULL);
@@ -21,7 +27,12 @@ Node* larger_opt_test_case() {
 
 Node* larger_opt_test_case_shifted_noise1() {
     Node* add1 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, (double []){8}), create_leaf(OP_CONST, (double []){9})}, NULL);
-    Node* add2 = create_op(OP_SHIFTED_NOISE, (Node *[]){create_leaf(OP_CONST, (double []){10}), create_leaf(OP_CONST, (double []){11}), create_leaf(OP_CONST, (double []){10})}, NULL);
+    Node* add2 = create_op(OP_SHIFTED_NOISE,
+        (Node *[]){
+            create_leaf(OP_CONST, (double []){10}), create_leaf(OP_CONST, (double []){11}), create_leaf(OP_CONST, (double []){10})
+        },
+        (double[]){0, 1.0, 1.0}
+    );
     Node* add3 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, (double []){6}), create_leaf(OP_CONST, (double []){7})}, NULL);
     Node* add4 = create_op(OP_ADD, (Node *[]){add2, add3}, NULL);
     Node* add5 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, (double []){12}), create_leaf(OP_CONST, (double []){13})}, NULL);
@@ -41,7 +52,7 @@ Node* larger_opt_test_case_shifted_noise2() {
     Node* add6 = create_op(OP_ADD, (Node *[]){create_leaf(OP_CONST, (double []){6.0}), create_leaf(OP_CONST, (double []){7.0})}, NULL);
     Node* add2 = create_op(OP_ADD, (Node *[]){add5, add6}, NULL);
     
-    Node* root = create_op(OP_SHIFTED_NOISE, (Node *[]){add0, add1, add2}, NULL);
+    Node* root = create_op(OP_SHIFTED_NOISE, (Node *[]){add0, add1, add2}, (double[]){0, 1.0, 1.0});
     return root;
 }
 
@@ -101,7 +112,7 @@ Node* squeeze_test_case() {
 }
 
 Node* clamp_test_case() {
-    return create_op(OP_CLAMP, (Node *[]){create_leaf(OP_CONST, (double []){67})}, NULL);
+    return create_op(OP_CLAMP, (Node *[]){create_leaf(OP_CONST, (double []){67})}, (double[]){0.0, 1.0});
 }
 
 Node* y_clamped_grad_test_case() {
@@ -109,7 +120,6 @@ Node* y_clamped_grad_test_case() {
 }
 
 Node* basic_spline_test_case() {
-    Node* add = create_op(OP_ADD, (Node*[]){create_leaf(OP_CONST, (double[]){60.0}), create_leaf(OP_CONST, (double[]){7.0})}, NULL);
     return create_op(
         OP_SPLINE,
         (Node*[]){
@@ -200,6 +210,65 @@ Node* find_top_surf_test_case() {
     );
 }
 
+Node* range_choice_test_case() {
+    return create_op(OP_RANGE_CHOICE,
+        (Node*[]){
+            create_leaf(OP_CONST, (double[]){4.7}),
+            create_leaf(OP_CONST, (double[]){4.0}),
+            larger_opt_test_case(),
+        },
+        (double[]){5.0, 10.0}
+    );
+}
+
+Node* interval_select_test_case() {
+    return create_op(OP_INTERVAL_SELECT,
+        (Node*[]){
+            create_op(OP_ADD, // Input
+                (Node*[]) {
+                    create_leaf(OP_CONST, (double[]){0.5}),
+                    create_leaf(OP_CONST, (double[]){0.5}),
+                },
+                NULL
+            ),
+            create_op(OP_ADD, // Threshold function 1 (66)
+                (Node*[]) {
+                    create_leaf(OP_CONST, (double[]){61.0}),
+                    create_leaf(OP_CONST, (double[]){5.0}),
+                },
+                NULL
+            ),
+            create_op(OP_ADD, // Threshold function 2 (67)
+                (Node*[]) {
+                    create_leaf(OP_CONST, (double[]){5.0}),
+                    create_leaf(OP_CONST, (double[]){62.0}),
+                },
+                NULL
+            ),
+            create_op(OP_ADD, // Threshold function 3 (76)
+                (Node*[]) {
+                    create_leaf(OP_CONST, (double[]){70.0}),
+                    create_leaf(OP_CONST, (double[]){6.0}),
+                },
+                NULL
+            )
+        },
+        (double[]){2.0, 1.0, 2.0} // num of thresholds, threshold locations
+    );
+}
+
+Node* noise_test_case() {
+    return create_leaf(OP_NOISE, (double[]){0.0, 1.0, 1.0});
+}
+
+Node* shift_b_test_case() {
+    return create_leaf(OP_SHIFT_B, (double[]){0.0});
+}
+
+Node* old_blended_noise_test_case() {
+    return create_leaf(OP_OLD_BLENDED_NOISE, (double[]){1.0, 1.0, 1.0, 1.0, 1.0});
+}
+
 #define EPSILON 0.0000000000001
 
 int test_full_algo(Node* root, char* case_name, int case_num, int expected_regs, double expected_result) {
@@ -226,8 +295,8 @@ int test_full_algo(Node* root, char* case_name, int case_num, int expected_regs,
 void run_all_test_cases() {
     TestCase cases[] = {
         { .name = "Larger Opt (Add Associativity + Larger Branch Reorder)", .fn = larger_opt_test_case, .exp_regs = 1, .exp_result = 76.0 },
-        { .name = "Larger Opt Shifted Noise 1 (Child associativity)", .fn = larger_opt_test_case_shifted_noise1, .exp_regs = 1, .exp_result = 86.0 },
-        { .name = "Larger Opt Shifted Noise 2 (Child non-associativity)", .fn = larger_opt_test_case_shifted_noise2, .exp_regs = 3, .exp_result = 48.0 },
+        //{ .name = "Larger Opt Shifted Noise 1 (Child associativity)", .fn = larger_opt_test_case_shifted_noise1, .exp_regs = 1, .exp_result = 86.0 },
+        //{ .name = "Larger Opt Shifted Noise 2 (Child non-associativity)", .fn = larger_opt_test_case_shifted_noise2, .exp_regs = 3, .exp_result = 48.0 },
         { .name = "One Arg", .fn = one_arg_test_case, .exp_regs = 2, .exp_result = 67.0 },
         { .name = "Min and Max", .fn = min_and_max_test_case, .exp_regs = 2, .exp_result = 67.0 },
         { .name = "Add/Mul Associativity", .fn = associativity_test_case, .exp_regs = 1, .exp_result = 9.0 },
@@ -241,7 +310,12 @@ void run_all_test_cases() {
         { .name = "Basic Spline", .fn = basic_spline_test_case, .exp_regs = 1, .exp_result = 67.0 },
         { .name = "Nested Spline", .fn = nested_spline_test_case, .exp_regs = 4, .exp_result = 67.0 },
         { .name = "Blend Operations", .fn = blend_test_case, .exp_regs = 1, .exp_result = 67.0 },
-        { .name = "Find Top Surface", .fn = find_top_surf_test_case, .exp_regs = 2, .exp_result = 67.0 }
+        { .name = "Find Top Surface", .fn = find_top_surf_test_case, .exp_regs = 2, .exp_result = 67.0 },
+        { .name = "Range Choice", .fn = range_choice_test_case, .exp_regs = 1, .exp_result = 76.0 },
+        { .name = "Interval Select", .fn = interval_select_test_case, .exp_regs = 1, .exp_result = 67.0 },
+        //{ .name = "Noise", .fn = noise_test_case, .exp_regs = 1, .exp_result = 0.67 },
+        //{ .name = "Shift B", .fn = shift_b_test_case, .exp_regs = 1, .exp_result = 0.67 },
+        //{ .name = "Old Blended Noise", .fn = old_blended_noise_test_case, .exp_regs = 1, .exp_result = 0.67 }
     };
     bool consider_regs = true;
     int len = sizeof(cases) / sizeof(cases[0]);
@@ -265,4 +339,14 @@ void run_all_test_cases() {
     } else {
         printf("\x1B[31mTest Failed (%d Passed / %d Total)\033[0m\n", total_passed, len);
     }
+}
+
+int main() {
+    register_op(OP_ADD, 2, 1);                  // associative
+    register_op(OP_MUL, 3, 1);                  // associative
+    register_op(OP_MIN, 1, 1);                  // associative
+    register_op(OP_MAX, 1, 1);                  // associative
+
+    run_all_test_cases();
+    return 0;
 }

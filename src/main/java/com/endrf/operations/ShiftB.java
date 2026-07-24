@@ -9,4 +9,8 @@ public class ShiftB implements OperationArg {
     public ShiftB(String argument) {
         this.argument = argument;
     }
+
+    public String getNoisePath() {
+        return this.argument;
+    }
 }
