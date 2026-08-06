@@ -1,9 +1,14 @@
 # LudiGen
 
-## Setup
+Minecraft Terrain Generation at Ludicrous Speeds
 
-For setup instructions, please see the [Fabric Documentation page](https://docs.fabricmc.net/develop/getting-started/creating-a-project#setting-up) related to the IDE that you are using.
+## In Development Notice
 
-## License
+This project is subject to major changes in the installation and build process, therefore installation and build documentation is not yet available but will be very soon.
 
-This template is available under the CC0 license. Feel free to learn from it and incorporate it in your own projects.
+This project is based off of a previous prototype called Ludicrous. For information and demonstrations of the initial prototype visit the [Ludicrous](https://github.com/LudicrousMC/ludicrous) project.
+
+## Contributors
+
+- Endrf (Creator and Lead Developer)
+- ryanred10 (Developed internal JSON-to-bytecode Compiler and Interpreter)
