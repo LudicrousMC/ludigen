@@ -3,11 +3,13 @@
   "package": "com.endrf.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
-    "ChunkMixin",
+    "ChunkPyramidMixin",
+    "NoiseChunkMixin",
     "ExampleMixin",
     "NormalNoiseAccessor",
     "PerlinNoiseAccessor",
-    "ImprovedNoiseAccessor"
+    "ImprovedNoiseAccessor",
+    "BlendedNoiseAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -3,6 +3,7 @@
 
 #ifndef SHADER
 #include <stdint.h>
+#include <math.h>
 typedef struct ImprovedNoise ImprovedNoise;
 typedef struct ImprovedNoiseWrapper ImprovedNoiseWrapper;
 typedef struct PerlinNoise PerlinNoise;
@@ -23,7 +24,7 @@ struct ImprovedNoiseWrapper {
     int index;
 };
 
-struct __attribute__((packed)) PerlinNoise {
+struct PerlinNoise {
     double lowest_freq_value_factor;
     double lowest_freq_input_factor;
     uint8_t levels_count; // Number of improved noise states
@@ -45,6 +46,8 @@ double generate_improved_noise(
     double val2
 );
 
+ImprovedNoise* get_perlin_noise_level(PerlinNoise* noise, ImprovedNoise* noise_levels, int level);
+
 double generate_perlin_noise(
     PerlinNoise noise,
     ImprovedNoise* noise_levels,
@@ -60,5 +63,9 @@ double generate_normal_noise(
     double y,
     double z
 );
+
+static inline double wrap(double val) {
+    return val - floor((val / (double)(1 << 25)) + 0.5) * (double)(1 << 25);
+}
 
 #endif

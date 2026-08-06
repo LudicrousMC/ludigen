@@ -36,7 +36,7 @@ public class LudicrousEngineInstance {
         engine.setNoiseStates(this.ptr, noiseStates, noiseLevelStates);
     }
 
-    public void evalDensityFunction() {
-        engine.evalDensityFunction(this.ptr);
+    public double evalDensityFunction(int x, int y, int z) {
+        return engine.evalDensityFunction(this.ptr, x, y, z);
     }
 }

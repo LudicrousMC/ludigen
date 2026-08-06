@@ -23,6 +23,7 @@ public class LudiGen implements ModInitializer {
 
     public static AtomicReference<Long> seed = new AtomicReference<>();
     public static HashMap<String, Integer> dimensions = new HashMap<>();
+    public static LudicrousEngineInstance instance = LudicrousEngine.createInstance();
 
 	@Override
 	public void onInitialize() {
@@ -64,19 +65,15 @@ public class LudiGen implements ModInitializer {
 
     public void startInstance() {
         NoiseStates.addOldBlendedNoise();
-        long start = System.nanoTime();
         JsonManager json;
         try {
             json = new JsonManager(Main.class);
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        LudicrousEngineInstance instance = LudicrousEngine.createInstance();
+        instance = LudicrousEngine.createInstance();
         instance.setDensityFunction(json.worldTypes.get("overworld").jsonDensityFunctions.get("final_density"));
         instance.setNoiseStates(NoiseStates.noiseStates, NoiseStates.noiseLevelStates);
-        instance.evalDensityFunction();
-        long end = System.nanoTime();
-        LOGGER.info("time: " + (end - start));
         //LudicrousEngine.test();
         try {
             instance.registerShader("eval");

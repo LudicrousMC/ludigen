@@ -1,0 +1,11 @@
+accessWidener v1 official
+
+accessible class net/minecraft/world/level/levelgen/NoiseChunk$FlatCache
+accessible class net/minecraft/world/level/levelgen/NoiseChunk$BlendAlpha
+accessible class net/minecraft/world/level/levelgen/NoiseChunk$BlendOffset
+accessible class net/minecraft/world/level/levelgen/NoiseChunk$NoiseChunkDensityFunction
+accessible method net/minecraft/world/level/levelgen/NoiseChunk wrap (Lnet/minecraft/world/level/levelgen/DensityFunction;)Lnet/minecraft/world/level/levelgen/DensityFunction;
+accessible method net/minecraft/world/level/levelgen/OreVeinifier create (Lnet/minecraft/world/level/levelgen/DensityFunction;Lnet/minecraft/world/level/levelgen/DensityFunction;Lnet/minecraft/world/level/levelgen/DensityFunction;Lnet/minecraft/world/level/levelgen/PositionalRandomFactory;)Lnet/minecraft/world/level/levelgen/NoiseChunk$BlockStateFiller;
+accessible field net/minecraft/world/level/levelgen/NoiseChunk$FlatCache values [D
+accessible field net/minecraft/world/level/levelgen/NoiseChunk$FlatCache sizeXZ I
+accessible class net/minecraft/world/level/levelgen/DensityFunctions$BeardifierMarker

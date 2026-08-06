@@ -54,15 +54,15 @@ static inline double sample_plus_lerp(
     int xyz111 = noise[xy11 + z + 1] & 0xF;
 
     double x_real1 = x_real - 1.0;
-    double y_real1 = y_real - 1.0;
+    double y_real1 = y_real_offset - 1.0;
     double z_real1 = z_real - 1.0;
     Gradient s000 = SIMPLEX_GRADIENT[xyz000];
     double d000 = (double)s000.x * x_real
-                + (double)s000.y * y_real
+                + (double)s000.y * y_real_offset
                 + (double)s000.z * z_real;
     Gradient s100 = SIMPLEX_GRADIENT[xyz100];
     double d100 = (double)s100.x * x_real1
-                + (double)s100.y * y_real
+                + (double)s100.y * y_real_offset
                 + (double)s100.z * z_real;
     Gradient s010 = SIMPLEX_GRADIENT[xyz010];
     double d010 = (double)s010.x * x_real
@@ -74,11 +74,11 @@ static inline double sample_plus_lerp(
                 + (double)s110.z * z_real;
     Gradient s001 = SIMPLEX_GRADIENT[xyz001];
     double d001 = (double)s001.x * x_real
-                + (double)s001.y * y_real
+                + (double)s001.y * y_real_offset
                 + (double)s001.z * z_real1;
     Gradient s101 = SIMPLEX_GRADIENT[xyz101];
     double d101 = (double)s101.x * x_real1
-                + (double)s101.y * y_real
+                + (double)s101.y * y_real_offset
                 + (double)s101.z * z_real1;
     Gradient s011 = SIMPLEX_GRADIENT[xyz011];
     double d011 = (double)s011.x * x_real
@@ -91,7 +91,7 @@ static inline double sample_plus_lerp(
 
     return lerp3(
         smoothstep(x_real),
-        smoothstep(y_real_offset),
+        smoothstep(y_real),
         smoothstep(z_real),
         d000,
         d100,
@@ -121,12 +121,10 @@ double generate_improved_noise(
     x -= x_floor;
     y -= y_floor;
     z -= z_floor;
-    double y_offset;
+    double y_offset = y;
     if (val1 != 0.0) {
         double val = val2 >= 0.0 && val2 < y ? val2 : y;
-        y_offset = y - (val1 * floor((val / val1) + 1.0e-7));
-    } else {
-        y_offset = y;
+        y_offset -= val1 * floor((val / val1) + 1.0e-7F);
     }
     return sample_plus_lerp(
         noise->values,
@@ -137,8 +135,8 @@ double generate_improved_noise(
     );
 }
 
-static inline double wrap(double val) {
-    return val - floor((val / (double)(1 << 25)) + 0.5) * (double)(1 << 25);
+ImprovedNoise* get_perlin_noise_level(PerlinNoise* noise, ImprovedNoise* noise_levels, int level) {
+    return noise_levels + noise->levels_index + noise->levels_count - level - 1;
 }
 
 double generate_perlin_noise(

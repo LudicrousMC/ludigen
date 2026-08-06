@@ -21,7 +21,7 @@ public class ShiftBSerializer implements JsonSerializer<ShiftB> {
     public JsonElement serialize(ShiftB src, Type typeOfSrc, JsonSerializationContext context) {
         int noiseIndex = NoiseStates.registerNoiseState(rand, src.getNoisePath(), noiseParams);
         JsonObject json = new JsonObject();
-        json.addProperty("type", "minecraft:shift_b");
+        json.addProperty("type", "minecraft:shift_a");
         json.addProperty("argument", noiseIndex);
 
         return json;

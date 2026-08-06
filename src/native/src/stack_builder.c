@@ -661,8 +661,8 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
 
     for (int i = finalStack->op_stack_len - 1; i >= 0; i--)
     {
-        printf("%d %d %d\n", finalStack->op_stack[i].op_type, finalStack->op_stack[i].result_index, i);
-        fflush(stdout);
+        //printf("%d %d %d\n", finalStack->op_stack[i].op_type, finalStack->op_stack[i].result_index, i);
+        //fflush(stdout);
         switch (finalStack->op_stack[i].op_type)
         {
         case OP_ADD:
@@ -897,8 +897,8 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                         double point2_loc = get_const(finalStack, i, point_index + 3);
                         double point2_deriv = get_const(finalStack, i, point_index + 4);
                         double point2_val = finalStack->const_args[abs(point2_PC) - 1];
-                        printf("spline 1 de %lf, lo %lf, va %lf\n", point1_deriv, point1_loc, point1_val);
-                        printf("spline 2 de %lf, lo %lf, va %lf\n", point2_deriv, point2_loc, point2_val);
+                        //printf("spline 1 de %lf, lo %lf, va %lf\n", point1_deriv, point1_loc, point1_val);
+                        //printf("spline 2 de %lf, lo %lf, va %lf\n", point2_deriv, point2_loc, point2_val);
                         fflush(stdout);
 
                         // Store final value and set stack offset to return frame
@@ -916,8 +916,8 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                     }
                 }
             } else {
-                printf("spline point\n");
-                fflush(stdout);
+                //printf("spline point\n");
+                //fflush(stdout);
                 // Spline point case
                 int main_spline_reg_index = finalStack->op_stack[i].result_index;
                 int main_spline_stack_index = finalStack->op_stack[i].arg_indexes[0];
@@ -986,21 +986,98 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
             );
             break;
         }
-        case OP_OLD_BLENDED_NOISE:
+        case OP_OLD_BLENDED_NOISE: {
             double smear_scale_mult = get_const(finalStack, i, 0);
             double xz_factor = get_const(finalStack, i, 1);
-            double xz_mult = get_const(finalStack, i, 2) * 684.412;
+            double xz_scale = get_const(finalStack, i, 2) * 684.412;
             double y_factor = get_const(finalStack, i, 3);
-            double y_mult = get_const(finalStack, i, 4) * 684.412;
-            regArray[finalStack->op_stack[i].result_index] = 0.05283727086562935;
+            double y_scale = get_const(finalStack, i, 4) * 684.412;
+            double block_x_mul = (double)x * xz_scale;
+            double block_y_mul = (double)y * y_scale;
+            double block_z_mul = (double)z * xz_scale;
+            double block_x_fact = block_x_mul / xz_factor;
+            double block_y_fact = block_y_mul / y_factor;
+            double block_z_fact = block_z_mul / xz_factor;
+            double y_smear = y_scale * smear_scale_mult;
+            double y_smear_factor = y_smear / y_factor;
+
+            double noise_acc = 0.0;
+            double acc = 1.0;
+            for (int i = 0; i < 8; i++) {
+                ImprovedNoise* noise_level = get_perlin_noise_level(
+                    &finalStack->noise_states[0].noises[1],
+                    finalStack->noise_levels,
+                    i
+                );
+                noise_acc += generate_improved_noise(
+                    noise_level,
+                    wrap(block_x_fact * acc),
+                    wrap(block_y_fact * acc),
+                    wrap(block_z_fact * acc),
+                    y_smear_factor * acc,
+                    block_y_fact * acc
+                ) / acc;
+                acc /= 2.0;
+            }
+
+            double noise_result = (1.0 + (noise_acc / 10.0)) / 2.0;
+            double min_noise_acc = 0.0;
+            double max_noise_acc = 0.0;
+            acc = 1.0;
+            for (int i = 0; i < 16; i++) {
+                double block_x_wrap = wrap(block_x_mul * acc);
+                double block_y_wrap = wrap(block_y_mul * acc);
+                double block_z_wrap = wrap(block_z_mul * acc);
+                double y_smear_adj = y_smear * acc;
+                double block_y_adj = block_y_mul * acc;
+                ImprovedNoise* noise_limit = get_perlin_noise_level(
+                    &finalStack->noise_states[0].noises[0],
+                    finalStack->noise_levels,
+                    i
+                );
+                if (!(noise_result <= 0.0)) {
+                    max_noise_acc += generate_improved_noise(
+                        noise_limit,
+                        block_x_wrap,
+                        block_y_wrap,
+                        block_z_wrap,
+                        y_smear_adj,
+                        block_y_adj
+                    ) / acc;
+                }
+                if (!(noise_result >= 1.0)) {
+                    min_noise_acc += generate_improved_noise(
+                        noise_limit + 16, // Assumes min/max perlin noise has 16 levels
+                        block_x_wrap,
+                        block_y_wrap,
+                        block_z_wrap,
+                        y_smear_adj,
+                        block_y_adj
+                    ) / acc;
+                }
+                acc /= 2.0;
+            }
+            double final_result;
+            if (noise_result < 0.0) {
+                final_result = min_noise_acc / (double)(1 << 16);
+            } else if (noise_result > 1.0) {
+                final_result = max_noise_acc / (double)(1 << 16);
+            } else {
+                final_result = lerp(noise_result, min_noise_acc / 512.0, max_noise_acc / 512.0) / 128.0;
+            }
+
+            //printf("old blend noise %lf %lf %lf %lf\n", noise_result, min_noise_acc, max_noise_acc, final_result);
+            //fflush(stdout);
+            regArray[finalStack->op_stack[i].result_index] = final_result;
             break;
+        }
         default:
             break;
         }
-        for (int j = 0; j < finalStack->max_reg+1; j++)
-            printf("%lf ", regArray[j]);
-        printf("%d %d\n", finalStack->op_stack[i].op_type, i);
-        fflush(stdout);
+        //for (int j = 0; j < finalStack->max_reg+1; j++)
+        //    printf("%lf ", regArray[j]);
+        //printf("%d %d\n", finalStack->op_stack[i].op_type, i);
+        //fflush(stdout);
     }
     // printf("%lf\n", regArray[0]);
     return regArray[0];

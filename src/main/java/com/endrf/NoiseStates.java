@@ -1,5 +1,6 @@
 package com.endrf;
 
+import com.endrf.mixin.BlendedNoiseAccessor;
 import com.endrf.mixin.ImprovedNoiseAccessor;
 import com.endrf.mixin.NormalNoiseAccessor;
 import com.endrf.mixin.PerlinNoiseAccessor;
@@ -27,8 +28,9 @@ public class NoiseStates {
         String randType = rand instanceof XoroshiroRandomSource.XoroshiroPositionalRandomFactory
                 ? "1"
                 : rand instanceof LegacyRandomSource.LegacyPositionalRandomFactory
-                ? "0" : "";
+                ? "0" : "-1";
         String noiseStatePath = path + randType;
+
         if (noiseStatesMap.containsKey(noiseStatePath)) {
             return noiseStatesMap.get(noiseStatePath);
         }
@@ -37,15 +39,6 @@ public class NoiseStates {
         NormalNoise noise = NormalNoise.create(rand.fromHashOf(path), new NormalNoise.NoiseParameters(param.firstOctave, DoubleList.of(param.amplitudes)));
         noiseStatesMap.put(noiseStatePath, noiseStates.size());
         noiseStates.add(createNoiseState(noise, param));
-        if (path.equals("minecraft:ridge")) {
-            double result = 0;
-            System.out.println("Coordinate:\n\tX | 57392152914566.49321\n\tY | 67432010703250.432\n\tZ | -97419932495.33332");
-            long startTime = System.nanoTime();
-            result = noise.getValue(57392152914566.49321, 67432010703250.432, -97419932495.33332);
-            long endTime = System.nanoTime();
-            System.out.println("normalnoise java: " + result);
-            System.out.println("time: " + (endTime - startTime) + " nanoseconds");
-        }
         return noiseStates.size() - 1;
     }
 
@@ -105,23 +98,75 @@ public class NoiseStates {
     }
 
     public static void addOldBlendedNoise() {
-        BlendedNoise oldBlendedNoise = BlendedNoise.createUnseeded(0.25, 0.125, 80.0, 160.0, 8.0);
-        System.out.println("old blended " + oldBlendedNoise.compute(new DensityFunction.FunctionContext() {
-            @Override
-            public int blockX() {
-                return 0;
+        BlendedNoiseAccessor blendedNoise = (BlendedNoiseAccessor)BlendedNoise.createUnseeded(0.0, 0.0, 0.0, 0.0, 0.0);
+        PerlinNoiseAccessor perlin1 = (PerlinNoiseAccessor)blendedNoise.getMaxLimitNoise();
+        ImprovedNoise[] perlin1Levels = perlin1.getNoiseLevels();
+        PerlinNoiseState perlinState1 = new PerlinNoiseState(
+                perlin1.getLowestFreqValueFactor(),
+                perlin1.getLowestFreqInputFactor(),
+                perlin1Levels.length,
+                noiseLevelStates.size()
+        );
+        for (int i = 0; i < 16; i++) {
+            ImprovedNoise iNoise = perlin1Levels[i];
+            if (iNoise == null) {
+                noiseLevelStates.add(ImprovedNoiseState.createDisabled());
+            } else {
+                noiseLevelStates.add(new ImprovedNoiseState(
+                        iNoise.xo,
+                        iNoise.yo,
+                        iNoise.zo,
+                        ((ImprovedNoiseAccessor) (Object) iNoise).getP(),
+                        1.0,
+                        false
+                ));
             }
-
-            @Override
-            public int blockY() {
-                return 0;
+        }
+        PerlinNoiseAccessor perlin2 = (PerlinNoiseAccessor)blendedNoise.getMinLimitNoise();
+        ImprovedNoise[] perlin2Levels = perlin2.getNoiseLevels();
+        for (int i = 0; i < 16; i++) {
+            ImprovedNoise iNoise = perlin2Levels[i];
+            if (iNoise == null) {
+                noiseLevelStates.add(ImprovedNoiseState.createDisabled());
+            } else {
+                noiseLevelStates.add(new ImprovedNoiseState(
+                        iNoise.xo,
+                        iNoise.yo,
+                        iNoise.zo,
+                        ((ImprovedNoiseAccessor) (Object) iNoise).getP(),
+                        1.0,
+                        false
+                ));
             }
-
-            @Override
-            public int blockZ() {
-                return 0;
+        }
+        PerlinNoiseAccessor perlin3 = (PerlinNoiseAccessor)blendedNoise.getMainNoise();
+        ImprovedNoise[] perlin3Levels = perlin3.getNoiseLevels();
+        PerlinNoiseState perlinState3 = new PerlinNoiseState(
+                perlin3.getLowestFreqValueFactor(),
+                perlin3.getLowestFreqInputFactor(),
+                perlin3Levels.length,
+                noiseLevelStates.size()
+        );
+        for (int i = 0; i < 8; i++) {
+            ImprovedNoise iNoise = perlin3Levels[i];
+            if (iNoise == null) {
+                noiseLevelStates.add(ImprovedNoiseState.createDisabled());
+            } else {
+                noiseLevelStates.add(new ImprovedNoiseState(
+                        iNoise.xo,
+                        iNoise.yo,
+                        iNoise.zo,
+                        ((ImprovedNoiseAccessor) (Object) iNoise).getP(),
+                        1.0,
+                        false
+                ));
             }
-        }));
+        }
+        noiseStates.add(new NormalNoiseState(
+                new PerlinNoiseState[]{perlinState1, perlinState3},
+                blendedNoise.getMaxValue(),
+                0.0
+        ));
     }
 
     public static class NormalNoiseState {

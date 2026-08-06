@@ -788,21 +788,23 @@ Java_com_endrf_LudicrousEngine_setNoiseStates(JNIEnv* env, jclass cls, jlong ins
     double result;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
     result = generate_normal_noise(&noiseStates[12], noiseLevels, 57392152914566.49321, 67432010703250.432, -97419932495.33332);
+    //result = generate_normal_noise(&noiseStates[39], noiseLevels, 0.0, 0.0, 0.0);
     clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     printf("normalnoise c: %.17lf\n", result);
     printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
     fflush(stdout);
 }
 
-JNIEXPORT void JNICALL
-Java_com_endrf_LudicrousEngine_evalDensityFunction(JNIEnv* env, jclass cls, jlong instancePtr) {
+JNIEXPORT jdouble JNICALL
+Java_com_endrf_LudicrousEngine_evalDensityFunction(JNIEnv* env, jclass cls, jlong instancePtr, jint x, jint y, jint z) {
     InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-    double result = evaluate_stack((EvalStack*)state->data, 20, 120, -200);
-    clock_gettime(CLOCK_MONOTONIC_RAW, &end);
-    printf("registers: %d\n", ((EvalStack*)state->data)->max_reg+1);
-    printf("result: %.30lf\n", result);
-    printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
-    fflush(stdout);
+    //struct timespec start, end;
+    //clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+    double result = evaluate_stack((EvalStack*)state->data, x, y, z);
+    //clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+    //printf("registers: %d\n", ((EvalStack*)state->data)->max_reg+1);
+    //printf("result: %.30lf\n", result);
+    //printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
+    //fflush(stdout);
+    return result;
 }

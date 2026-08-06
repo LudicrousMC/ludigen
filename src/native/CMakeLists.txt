@@ -3,6 +3,13 @@ project(ludicrous_engine)
 
 find_package(JNI REQUIRED)
 find_package(Vulkan REQUIRED)
+include(FetchContent)
+FetchContent_Declare(
+    yyjson
+    GIT_REPOSITORY https://github.com/ibireme/yyjson.git
+    GIT_TAG 0.12.0
+)
+FetchContent_MakeAvailable(yyjson)
 
 add_library(ludicrous_engine SHARED src/ludicrous_engine.c)
 
@@ -19,15 +26,17 @@ set(le_sources
     noise_gen.c
     vulkan_util.c
     shader.c
-    yyjson.c
 )
 
 list(TRANSFORM le_sources PREPEND "src/")
 
 target_sources(ludicrous_engine PRIVATE ${le_sources})
 
-target_link_libraries(ludicrous_engine PRIVATE Vulkan::Vulkan stack_builder)
-target_link_libraries(test_cases PRIVATE stack_builder m)
+target_link_libraries(ludicrous_engine PRIVATE Vulkan::Vulkan yyjson stack_builder)
+target_link_libraries(test_cases PRIVATE stack_builder)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_cases PRIVATE m)
+endif()
 
 target_include_directories(ludicrous_engine PRIVATE
     ${JNI_INCLUDE_DIRS}
@@ -36,7 +45,7 @@ target_include_directories(ludicrous_engine PRIVATE
 target_include_directories(stack_builder PRIVATE include)
 target_include_directories(test_cases PRIVATE include)
 
-target_compile_options(ludicrous_engine PRIVATE -O1 -march=native)
+target_compile_options(ludicrous_engine PRIVATE -O3 -march=native)
 
 set_target_properties(ludicrous_engine PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/output"
