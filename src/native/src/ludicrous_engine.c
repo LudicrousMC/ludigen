@@ -15,6 +15,7 @@
 #include "yyjson.h"
 #include "stack_builder.h"
 #include "noise_gen.h"
+#include "util.h"
 
 #define VULKAN_VERSION VK_API_VERSION_1_0
 #define ELEMENT_COUNT 1024
@@ -708,7 +709,7 @@ Java_com_endrf_LudicrousEngine_setDensityFunction(JNIEnv* env, jclass cls, jlong
     EvalStack* stack = generate_stack_wrapper(root);
     state->data = (void*)stack;
     //double result = evaluate_stack(stack, 0, 0, 0);
-    //printf("registers: %d\n", stack->max_reg+1);
+    printf("registers: %d\n", stack->max_reg+1);
     //printf("result: %.30lf\n", result);
     yyjson_doc_free(doc);
     fflush(stdout);
@@ -793,6 +794,86 @@ Java_com_endrf_LudicrousEngine_setNoiseStates(JNIEnv* env, jclass cls, jlong ins
     printf("normalnoise c: %.17lf\n", result);
     printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
     fflush(stdout);
+}
+
+JNIEXPORT jdoubleArray JNICALL
+Java_com_endrf_LudicrousEngine_fillNoise(JNIEnv* env, jclass cls, jlong instancePtr, jint min_y, jint height, jint cell_width, jint cell_height, jint x, jint z) {
+    InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
+    //struct timespec start, end;
+    //clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+    int max_y = height + min_y;
+    int xz_samples = (16 / cell_width) + 1;
+    int y_samples = (height / cell_height) + 1;
+    int sample_size = y_samples * xz_samples * xz_samples;
+    double* samples = (double*)malloc(sample_size * sizeof(double));
+    for (int y_in_chunk = min_y, y_index = 0; y_in_chunk <= max_y + 1; y_in_chunk += cell_height, y_index++) {
+        for (int z_in_chunk = 0, z_index = 0; z_in_chunk <= 16; z_in_chunk += cell_width, z_index++) {
+            for (int x_in_chunk = 0, x_index = 0; x_in_chunk <= 16; x_in_chunk += cell_width, x_index++) {
+                samples[(y_index * xz_samples * xz_samples) + (z_index * xz_samples) + x_index] = evaluate_stack((EvalStack*)state->data, x + x_in_chunk, y_in_chunk, z + z_in_chunk);
+            }
+        }
+    }
+
+    int size = (height + 1) * 16 * 16;
+    double* densities = (double*)malloc(size * sizeof(double));
+    for (int y_in_chunk = min_y, y_index = 0; y_in_chunk <= max_y; y_in_chunk++, y_index++) {
+        for (int z_in_chunk = 0; z_in_chunk < 16; z_in_chunk++) {
+            for (int x_in_chunk = 0; x_in_chunk < 16; x_in_chunk++) {
+                if (y_index % 8 == 0 && z_in_chunk % 4 == 0 && x_in_chunk % 4 == 0) {
+                    densities[(y_index * 256) + (z_in_chunk * 16) + x_in_chunk] = samples[(y_index * xz_samples * xz_samples / 8) + (z_in_chunk * xz_samples / 4) + (x_in_chunk / 4)];
+                    continue;
+                }
+
+                int sy = y_index / cell_height;
+                int sz = z_in_chunk / cell_width;
+                int sample_x = x_in_chunk / cell_width;
+                int sample_y = sy * xz_samples * xz_samples;
+                int sample_z = sz * xz_samples;
+                int sample_x1 = sample_x + 1;
+                int sample_y1 = (sy + 1) * xz_samples * xz_samples;
+                int sample_z1 = (sz + 1) * xz_samples;
+
+                int i000 = sample_x + sample_y + sample_z;
+                int i100 = sample_x1 + sample_y + sample_z;
+                int i001 = sample_x + sample_y + sample_z1;
+                int i101 = sample_x1 + sample_y + sample_z1;
+                int i010 = sample_x + sample_y1 + sample_z;
+                int i110 = sample_x1 + sample_y1 + sample_z;
+                int i011 = sample_x + sample_y1 + sample_z1;
+                int i111 = sample_x1 + sample_y1 + sample_z1;
+
+                double cell_pos_x = (double)x_in_chunk / cell_width;
+                double cell_pos_y = (double)y_index / cell_height;
+                double cell_pos_z = (double)z_in_chunk / cell_width;
+                double pos_x = cell_pos_x - (int)cell_pos_x;
+                double pos_y = cell_pos_y - (int)cell_pos_y;
+                double pos_z = cell_pos_z - (int)cell_pos_z;
+
+                double x00 = lerp(pos_x, samples[i000], samples[i100]);
+                double x01 = lerp(pos_x, samples[i001], samples[i101]);
+                double x10 = lerp(pos_x, samples[i010], samples[i110]);
+                double x11 = lerp(pos_x, samples[i011], samples[i111]);
+
+                double z0 = lerp(pos_z, x00, x01);
+                double z1 = lerp(pos_z, x10, x11);
+
+                densities[(y_index * 256) + (z_in_chunk * 16) + x_in_chunk] = lerp(pos_y, z0, z1);
+            }
+        }
+    }
+
+    jdoubleArray j_densities = (*env)->NewDoubleArray(env, size);
+    if (j_densities == NULL) {
+        free(densities);
+        return NULL;
+    }
+    (*env)->SetDoubleArrayRegion(env, j_densities, 0, size, (jdouble*)densities);
+    free(densities);
+    free(samples);
+    //clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+    //printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
+    //fflush(stdout);
+    return j_densities;
 }
 
 JNIEXPORT jdouble JNICALL

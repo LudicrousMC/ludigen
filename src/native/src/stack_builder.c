@@ -150,8 +150,9 @@ EvalStack* generate_stack_wrapper(Node* node) {
 
     EvalStack* evalStack = (EvalStack*)malloc(sizeof(EvalStack));
     // Allocate stack arrays
-    evalStack->op_stack = (StackFrame*)malloc(sizeof(StackFrame) * evalStackAlloc.op_stack_len);
-    evalStack->op_stack_len = 0;
+    evalStack->op_stack = (StackFrame*)malloc(sizeof(StackFrame) * (evalStackAlloc.op_stack_len + 1));
+    evalStack->op_stack[0] = (StackFrame){.op_type = OP_HALT};
+    evalStack->op_stack_len = 1;
     evalStack->const_args = (double*)malloc(sizeof(double) * evalStackAlloc.const_args_len);
     evalStack->const_args_len = 0;
     evalStack->max_reg = 0;
@@ -376,13 +377,14 @@ static int shifted_noise_op_gen(EvalStack* evalStack, size_t currentFrameIndex, 
     for (int i = 0; i < 3; i++)
         evalStack->op_stack[currentFrameIndex].arg_indexes[i] = generate_stack_recursive(evalStack, node->allChildren[i], regPos + (2 - i));
     */
+    int child_reg = regPos;
     for (int i = 0; i < 3; i++) {
-        size_t index = generate_stack_recursive(evalStack, node->allChildren[i], regPos + (2 - i));
+        size_t index = generate_stack_recursive(evalStack, node->allChildren[i], child_reg);
         evalStack->op_stack[currentFrameIndex].arg_indexes[i] = index;
         // If child was a operation, increment child register position
-        /*if (index >= 0) {
+        if (index >= 0) {
             child_reg++;
-        }*/
+        }
     }
 
     return regPos;
@@ -590,8 +592,18 @@ void rotate_right(Node* tail) {
 
 int larger_arg_right(Node* root) {
     OpInfo* op_info = lookup_op(root->operationType);
-    if (root->numChildren != 2 || !op_info || !op_info->associative)
-        return root->numChildren;
+    if (root->numChildren != 2 || !(op_info && op_info->associative)) {
+        if (root->numChildren == 0) {
+            return 0;
+        }
+        int max_children = 0;
+        for (int i = 0; i < root->numChildren; i++) {
+            int arg_max_children = larger_arg_right(root->allChildren[i]);
+            if (arg_max_children > max_children)
+                max_children = arg_max_children;
+        }
+        return max_children;
+    }
 
     int left_max_num_children = larger_arg_right(root->allChildren[0]);
     int right_max_num_children = larger_arg_right(root->allChildren[1]);
@@ -659,11 +671,11 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
     //printf("Registers Used: %d\n", finalStack->max_reg+1);
     double regArray[finalStack->max_reg+1];
 
-    for (int i = finalStack->op_stack_len - 1; i >= 0; i--)
+    /*for (int i = finalStack->op_stack_len; i >= 0;)
     {
         //printf("%d %d %d\n", finalStack->op_stack[i].op_type, finalStack->op_stack[i].result_index, i);
         //fflush(stdout);
-        switch (finalStack->op_stack[i].op_type)
+        switch (finalStack->op_stack[--i].op_type)
         {
         case OP_ADD:
             regArray[finalStack->op_stack[i].result_index] = get_arg(finalStack, regArray, i, 0) + get_arg(finalStack, regArray, i, 1);
@@ -772,6 +784,8 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                 double input = get_arg(finalStack, regArray, i, 0);
                 double min_incl = get_const(finalStack, i, 0);
                 double max_excl = get_const(finalStack, i, 1);
+                //printf("input %lf min %lf max %lf\n", input, min_incl, max_excl);
+                //fflush(stdout);
                 if (input < max_excl && input >= min_incl) {
                     int inRangeIndex = finalStack->op_stack[i].arg_indexes[1];
                     if (inRangeIndex < 0) {
@@ -839,6 +853,8 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                 shifted_y,
                 shifted_z
             );
+            //printf("shift noise %lf %lf %lf\n", xz_scale, y_scale, regArray[finalStack->op_stack[i].result_index]);
+            //fflush(stdout);
             break;
         }
         case OP_SPLINE:
@@ -876,6 +892,8 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
 
                         // Calculate final value and set stack pos to return spline frame
                         regArray[finalStack->op_stack[i].result_index] = linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value);
+                        //printf("spline const %lf\n", regArray[finalStack->op_stack[i].result_index]);
+                        //fflush(stdout);
                         i = finalStack->op_stack[i].arg_indexes[1];
                     } else {
                         // Set spline state in registers and set stack offset to compute first or last point
@@ -897,12 +915,11 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                         double point2_loc = get_const(finalStack, i, point_index + 3);
                         double point2_deriv = get_const(finalStack, i, point_index + 4);
                         double point2_val = finalStack->const_args[abs(point2_PC) - 1];
-                        //printf("spline 1 de %lf, lo %lf, va %lf\n", point1_deriv, point1_loc, point1_val);
-                        //printf("spline 2 de %lf, lo %lf, va %lf\n", point2_deriv, point2_loc, point2_val);
-                        fflush(stdout);
 
-                        // Store final value and set stack offset to return frame
                         regArray[finalStack->op_stack[i].result_index] = spline_compute(point1_loc, point1_deriv, point1_val, point2_loc, point2_deriv, point2_val, coord);
+                        //printf("spline double const %lf\n", regArray[finalStack->op_stack[i].result_index]);
+                        //fflush(stdout);
+                        // Store final value and set stack offset to return frame
                         i = finalStack->op_stack[i].arg_indexes[1];
                     } else if (point2_PC < 0) {
                         regArray[finalStack->op_stack[i].result_index + 1] = 1.0; // First point eval indicator
@@ -929,6 +946,8 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                     double point_deriv = get_const(finalStack, main_spline_stack_index, point_index + 1);
                     double point_value = regArray[main_spline_reg_index + 3];
                     regArray[finalStack->op_stack[i].result_index] = linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value);
+                    //printf("spline single arg %lf\n", regArray[finalStack->op_stack[i].result_index]);
+                    //fflush(stdout);
                     i = -(finalStack->op_stack[i].const_index + 1);
                 } else if (regArray[main_spline_reg_index + 1] >= 1.0 && regArray[main_spline_reg_index + 1] <= 3.0) {
                     // First point eval case, Second point eval case, and double point phase 2 eval case
@@ -938,15 +957,18 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                     double point1_deriv = get_const(finalStack, main_spline_stack_index, point_index + 1);
                     double point1_value = regArray[main_spline_reg_index + 1] != 2.0
                         ? regArray[main_spline_reg_index + 3] // First or double point eval
-                        : get_const(finalStack, main_spline_stack_index, point_index + 2); // Second point eval
+                        : finalStack->const_args[abs(get_const(finalStack, main_spline_stack_index, point_index + 2)) - 1]; // Second point eval
                     double point2_loc = get_const(finalStack, main_spline_stack_index, point_index + 3);
                     double point2_deriv = get_const(finalStack, main_spline_stack_index, point_index + 4);
                     double point2_value = regArray[main_spline_reg_index + 1] == 1.0
-                        ? get_const(finalStack, main_spline_stack_index, point_index + 5) // First point eval
+                        ? finalStack->const_args[abs(get_const(finalStack, main_spline_stack_index, point_index + 5)) - 1] // First point eval
                         : regArray[main_spline_reg_index + 1] == 2.0
                         ? regArray[main_spline_reg_index + 3] // Second point eval
                         : regArray[main_spline_reg_index + 2]; // Double point eval
                     regArray[finalStack->op_stack[i].result_index] = spline_compute(point1_loc, point1_deriv, point1_value, point2_loc, point2_deriv, point2_value, coord);
+                    //printf("fp %lf sp %lf info %lf %lf\n", point1_value, point2_value, point2_loc, point2_deriv);
+                    //printf("spline double arg %lf\n", regArray[finalStack->op_stack[i].result_index]);
+                    //fflush(stdout);
                     i = -(finalStack->op_stack[i].const_index + 1);
                 } else if (regArray[main_spline_reg_index + 1] == 4.0) {
                     // Double point eval case
@@ -1003,11 +1025,11 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
 
             double noise_acc = 0.0;
             double acc = 1.0;
-            for (int i = 0; i < 8; i++) {
+            for (int j = 0; j < 8; j++) {
                 ImprovedNoise* noise_level = get_perlin_noise_level(
                     &finalStack->noise_states[0].noises[1],
                     finalStack->noise_levels,
-                    i
+                    j
                 );
                 noise_acc += generate_improved_noise(
                     noise_level,
@@ -1024,7 +1046,7 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
             double min_noise_acc = 0.0;
             double max_noise_acc = 0.0;
             acc = 1.0;
-            for (int i = 0; i < 16; i++) {
+            for (int j = 0; j < 16; j++) {
                 double block_x_wrap = wrap(block_x_mul * acc);
                 double block_y_wrap = wrap(block_y_mul * acc);
                 double block_z_wrap = wrap(block_z_mul * acc);
@@ -1033,7 +1055,7 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
                 ImprovedNoise* noise_limit = get_perlin_noise_level(
                     &finalStack->noise_states[0].noises[0],
                     finalStack->noise_levels,
-                    i
+                    j
                 );
                 if (!(noise_result <= 0.0)) {
                     max_noise_acc += generate_improved_noise(
@@ -1078,7 +1100,524 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z) {
         //    printf("%lf ", regArray[j]);
         //printf("%d %d\n", finalStack->op_stack[i].op_type, i);
         //fflush(stdout);
+    }*/
+
+    void* dispatch_table[] = {
+        &&op_fallback, // OP_CONSTANT should not be present
+        &&op_add,
+        &&op_mul,
+        &&op_min,
+        &&op_max,
+        &&op_abs,
+        &&op_square,
+        &&op_cube,
+        &&op_half_negative,
+        &&op_quarter_negative,
+        &&op_invert,
+        &&op_squeeze,
+        &&op_clamp,
+        &&op_y_clamped_grad,
+        &&op_find_top_surface,
+        &&op_range_choice,
+        &&op_interval_select,
+        &&op_noise,
+        &&op_shifted_noise,
+        &&op_spline,
+        &&op_blend_density,
+        &&op_blend_offset,
+        &&op_blend_alpha,
+        &&op_interpolated,
+        &&op_cache_once,
+        &&op_flat_cache,
+        &&op_cache_2d,
+        &&op_cache_all_in_cell,
+        &&op_shift_a,
+        &&op_shift_b,
+        &&op_old_blended_noise,
+        &&op_end_islands,
+        &&op_halt
+    };
+
+    int pc = finalStack->op_stack_len;
+    goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+
+    op_fallback:
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+
+    op_add:
+        regArray[finalStack->op_stack[pc].result_index] = get_arg(finalStack, regArray, pc, 0) + get_arg(finalStack, regArray, pc, 1);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+
+    op_mul:
+        regArray[finalStack->op_stack[pc].result_index] = get_arg(finalStack, regArray, pc, 0) * get_arg(finalStack, regArray, pc, 1);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+
+    op_min: {
+        double arg1 = get_arg(finalStack, regArray, pc, 0);
+        double arg2 = get_arg(finalStack, regArray, pc, 1);
+        regArray[finalStack->op_stack[pc].result_index] = arg1 < arg2 ? arg1 : arg2;
+        //printf("min arg1 %lf arg2 %lf\n", arg1, arg2);
+        //fflush(stdout);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
     }
-    // printf("%lf\n", regArray[0]);
-    return regArray[0];
+
+    op_max: {
+        double arg1 = get_arg(finalStack, regArray, pc, 0);
+        double arg2 = get_arg(finalStack, regArray, pc, 1);
+        regArray[finalStack->op_stack[pc].result_index] = arg1 > arg2 ? arg1 : arg2;
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_abs:
+        regArray[finalStack->op_stack[pc].result_index] = fabs(get_arg(finalStack, regArray, pc, 0));
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+
+    op_square: {
+        double arg1 = get_arg(finalStack, regArray, pc, 0);
+        regArray[finalStack->op_stack[pc].result_index] = arg1 * arg1;
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_cube: {
+        double arg1 = get_arg(finalStack, regArray, pc, 0);
+        regArray[finalStack->op_stack[pc].result_index] = arg1 * arg1 * arg1;
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_half_negative: {
+        double arg1 = get_arg(finalStack, regArray, pc, 0);
+        regArray[finalStack->op_stack[pc].result_index] = arg1 < 0.0 ? arg1 * 0.5 : arg1;
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_quarter_negative: {
+        double arg1 = get_arg(finalStack, regArray, pc, 0);
+        regArray[finalStack->op_stack[pc].result_index] = arg1 < 0.0 ? arg1 * 0.25 : arg1;
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_invert:
+        regArray[finalStack->op_stack[pc].result_index] = 1.0 / get_arg(finalStack, regArray, pc, 0);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+
+    op_squeeze: {
+        double clamped_val = fmin(fmax(get_arg(finalStack, regArray, pc, 0), -1.0), 1.0);
+        regArray[finalStack->op_stack[pc].result_index] = (clamped_val / 2.0) - ((clamped_val * clamped_val * clamped_val) / 24.0);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_clamp: {
+        double minimum = get_const(finalStack, pc, 0);
+        double maximum = get_const(finalStack, pc, 1);
+        regArray[finalStack->op_stack[pc].result_index] = fmin(fmax(get_arg(finalStack, regArray, pc, 0), minimum), maximum);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_y_clamped_grad: {
+        double fromY = get_const(finalStack, pc, 0);
+        double toY = get_const(finalStack, pc, 1);
+        double fromValue = get_const(finalStack, pc, 2);
+        double toValue = get_const(finalStack, pc, 3);
+        regArray[finalStack->op_stack[pc].result_index] = clamped_map((double)y, fromY, toY, fromValue, toValue);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_find_top_surface: {
+        if (finalStack->op_stack[pc].const_index < 0) {
+            // Find Top Surface Early Return Condition
+            int main_pc_index = abs(finalStack->op_stack[pc].const_index) - 1;
+            int cell_height = (int)get_const(finalStack, main_pc_index, 0);
+            int lower_bound = (int)get_const(finalStack, main_pc_index, 1);
+            int top_y = ((int)floor(get_arg(finalStack, regArray, main_pc_index, 0) / cell_height)) * cell_height;
+            if (top_y <= lower_bound) {
+                regArray[finalStack->op_stack[pc].result_index] = lower_bound;
+                pc = main_pc_index;
+            } else {
+                // Save current y and switch y context to top_y
+                regArray[finalStack->op_stack[pc].result_index] = (double)y;
+                y = top_y;
+            }
+        } else {
+            // Find Top Surface Main
+            int cell_height = (int)get_const(finalStack, pc, 0);
+            int lower_bound = (int)get_const(finalStack, pc, 1);
+            double density = get_arg(finalStack, regArray, pc, 1);
+
+            if (density > 0.0) {
+                int block_y = y;
+                // Switch y context back to old y
+                y = regArray[finalStack->op_stack[pc].result_index];
+                regArray[finalStack->op_stack[pc].result_index] = block_y;
+            } else if (y >= lower_bound) {
+                if (finalStack->op_stack[pc].arg_indexes[1] < 0) {
+                    regArray[finalStack->op_stack[pc].result_index + 1] = density;
+                    pc++;
+                } else {
+                    pc = finalStack->op_stack[pc].arg_indexes[2];
+                }
+                y -= cell_height;
+            } else {
+                // Switch y context back to old y
+                y = regArray[finalStack->op_stack[pc].result_index];
+
+                regArray[finalStack->op_stack[pc].result_index] = lower_bound;
+            }
+        }
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_range_choice: {
+        if (finalStack->op_stack[pc].const_index >= 0) {
+            double input = get_arg(finalStack, regArray, pc, 0);
+            double min_incl = get_const(finalStack, pc, 0);
+            double max_excl = get_const(finalStack, pc, 1);
+            //printf("input %lf min %lf max %lf\n", input, min_incl, max_excl);
+            //fflush(stdout);
+            if (input < max_excl && input >= min_incl) {
+                int inRangeIndex = finalStack->op_stack[pc].arg_indexes[1];
+                if (inRangeIndex < 0) {
+                    regArray[finalStack->op_stack[pc].result_index] = get_arg(finalStack, regArray, pc, 1);
+                    pc = get_const(finalStack, pc, 2);
+                }
+            } else {
+                int outOfRangeIndex = finalStack->op_stack[pc].arg_indexes[2];
+                if (outOfRangeIndex < 0) {
+                    regArray[finalStack->op_stack[pc].result_index] = get_arg(finalStack, regArray, pc, 2);
+                    pc = get_const(finalStack, pc, 2);
+                } else {
+                    pc = outOfRangeIndex;
+                }
+            }
+        } else {
+            pc = -(finalStack->op_stack[pc].const_index + 1);
+        }
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_interval_select: {
+        if (finalStack->op_stack[pc].const_index >= 0) {
+            int num_thresholds = finalStack->op_stack[pc].arg_indexes[1];
+            double input = get_arg(finalStack, regArray, pc, 0);
+            // Find interval range
+            for (int j = 0; j <= num_thresholds; j++) {
+                if (j == num_thresholds || input < get_const(finalStack, pc, j)) {
+                    int threshold_index = get_const(finalStack, pc, num_thresholds + j);
+                    if (threshold_index < 0) {
+                        regArray[finalStack->op_stack[pc].result_index] = finalStack->const_args[(-threshold_index) - 1];
+                        pc = finalStack->op_stack[pc].arg_indexes[2];
+                    } else {
+                        pc = threshold_index;
+                    }
+                    break;
+                }
+            }
+        } else {
+            pc = -(finalStack->op_stack[pc].const_index + 1);
+        }
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_noise: {
+        int noise_index = get_const(finalStack, pc, 0);
+        double xz_scale = get_const(finalStack, pc, 1);
+        double y_scale = get_const(finalStack, pc, 2);
+        regArray[finalStack->op_stack[pc].result_index] = generate_normal_noise(
+            &finalStack->noise_states[noise_index],
+            finalStack->noise_levels,
+            (double)x * xz_scale,
+            (double)y * y_scale,
+            (double)z * xz_scale
+        );
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_shifted_noise: {
+        int noise_index = get_const(finalStack, pc, 0);
+        double xz_scale = get_const(finalStack, pc, 1);
+        double y_scale = get_const(finalStack, pc, 2);
+        double shifted_x = ((double)x * xz_scale) + get_arg(finalStack, regArray, pc, 0);
+        double shifted_y = ((double)y * y_scale) + get_arg(finalStack, regArray, pc, 1);
+        double shifted_z = ((double)z * xz_scale) + get_arg(finalStack, regArray, pc, 2);
+        regArray[finalStack->op_stack[pc].result_index] = generate_normal_noise(
+            &finalStack->noise_states[noise_index],
+            finalStack->noise_levels,
+            shifted_x,
+            shifted_y,
+            shifted_z
+        );
+        //printf("shift noise %lf %lf %lf\n", xz_scale, y_scale, regArray[finalStack->op_stack[pc].result_index]);
+        //fflush(stdout);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_spline: {
+        // If const_index is non negative, treat as main spline, else treat as spline point
+        if (finalStack->op_stack[pc].const_index >= 0) {
+            double coord = get_arg(finalStack, regArray, pc, 0);
+            int num_points = finalStack->op_stack[pc].arg_indexes[2];
+            int len = num_points;
+            // Search for point
+            int point_index = 0;
+            while (len > 0) {
+                int half = len / 2;
+                int mid = point_index + half;
+                if (coord < get_const(finalStack, pc, mid * 3)) {
+                    len = half;
+                } else {
+                    point_index = mid + 1;
+                    len -= half + 1;
+                }
+            }
+            point_index -= 1;
+            //printf("pi %d num %d\n", point_index, num_points);
+            //printf("loc %lf deriv %lf\n", get_const(finalStack, pc, point_index * 3), get_const(finalStack, pc, (point_index * 3) + 1));
+            //fflush(stdout);
+
+            if (point_index < 0 || point_index == num_points - 1) {
+                // If first point or last point (single point)
+                if (point_index < 0) {
+                    point_index = 0; // Use first point
+                } else {
+                    point_index *= 3; // Convert to 3 value indexing
+                }
+
+                int point_PC = get_const(finalStack, pc, point_index + 2);
+                // If first/last point is constant (negative), save result in register and go to return frame,
+                // else go to point value start frame
+                if (point_PC < 0) {
+                    double point_loc = get_const(finalStack, pc, point_index);
+                    double point_deriv = get_const(finalStack, pc, point_index + 1);
+                    double point_value = finalStack->const_args[abs(point_PC) - 1];
+
+                    // Calculate final value and set stack pos to return spline frame
+                    regArray[finalStack->op_stack[pc].result_index] = linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value);
+                    //printf("spline const %lf\n", regArray[finalStack->op_stack[pc].result_index]);
+                    //fflush(stdout);
+                    pc = finalStack->op_stack[pc].arg_indexes[1];
+                } else {
+                    // Set spline state in registers and set stack offset to compute first or last point
+                    regArray[finalStack->op_stack[pc].result_index + 1] = 0.0; // Single point indicator
+                    pc = point_PC;
+                }
+            } else {
+                point_index *= 3; // Convert to 3 value indexing
+                // If between points, interpolate (double point)
+                int point1_PC = get_const(finalStack, pc, point_index + 2);
+                int point2_PC = get_const(finalStack, pc, point_index + 5);
+                // If both points are constants (negative), compute spline and go to return frame,
+                // else if point2 is constant (negative), start on first point
+                // else go to point2 start frame
+                if (point2_PC < 0 && point1_PC < 0) {
+                    double point1_loc = get_const(finalStack, pc, point_index);
+                    double point1_deriv = get_const(finalStack, pc, point_index + 1);
+                    double point1_val = finalStack->const_args[abs(point1_PC) - 1];
+                    double point2_loc = get_const(finalStack, pc, point_index + 3);
+                    double point2_deriv = get_const(finalStack, pc, point_index + 4);
+                    double point2_val = finalStack->const_args[abs(point2_PC) - 1];
+
+                    regArray[finalStack->op_stack[pc].result_index] = spline_compute(point1_loc, point1_deriv, point1_val, point2_loc, point2_deriv, point2_val, coord);
+                    //printf("spline double const %lf (loc1 %lf deriv1 %lf val1 %lf loc2 %lf deriv2 %lf val2 %lf coord %lf) pi %d\n", regArray[finalStack->op_stack[pc].result_index], point1_loc, point1_deriv, point1_val, point2_loc, point2_deriv, point2_val, coord, point_index);
+                    //fflush(stdout);
+                    // Store final value and set stack offset to return frame
+                    pc = finalStack->op_stack[pc].arg_indexes[1];
+                } else if (point2_PC < 0) {
+                    regArray[finalStack->op_stack[pc].result_index + 1] = 1.0; // First point eval indicator
+                    pc = point1_PC;
+                } else if (point1_PC < 0) {
+                    regArray[finalStack->op_stack[pc].result_index + 1] = 2.0; // Second point eval indicator
+                    pc = point2_PC;
+                } else {
+                    regArray[finalStack->op_stack[pc].result_index + 1] = 4.0; // Double point eval indicator
+                    pc = point2_PC;
+                }
+            }
+        } else {
+            //printf("spline point\n");
+            //fflush(stdout);
+            // Spline point case
+            int main_spline_reg_index = finalStack->op_stack[pc].result_index;
+            int main_spline_stack_index = finalStack->op_stack[pc].arg_indexes[0];
+            if (regArray[main_spline_reg_index + 1] == 0.0) {
+                // Single point eval case
+                int point_index = finalStack->op_stack[pc].arg_indexes[1] * 3;
+                double coord = get_arg(finalStack, regArray, main_spline_stack_index, 0);
+                double point_loc = get_const(finalStack, main_spline_stack_index, point_index);
+                double point_deriv = get_const(finalStack, main_spline_stack_index, point_index + 1);
+                double point_value = regArray[main_spline_reg_index + 3];
+                regArray[finalStack->op_stack[pc].result_index] = linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value);
+                //printf("spline single arg %lf\n", regArray[finalStack->op_stack[pc].result_index]);
+                //fflush(stdout);
+                pc = -(finalStack->op_stack[pc].const_index + 1);
+            } else if (regArray[main_spline_reg_index + 1] >= 1.0 && regArray[main_spline_reg_index + 1] <= 3.0) {
+                // First point eval case, Second point eval case, and double point phase 2 eval case
+                int point_index = regArray[main_spline_reg_index + 1] == 2.0
+                    ? (finalStack->op_stack[pc].arg_indexes[1] - 1) * 3
+                    : finalStack->op_stack[pc].arg_indexes[1] * 3;
+                double coord = get_arg(finalStack, regArray, main_spline_stack_index, 0);
+                double point1_loc = get_const(finalStack, main_spline_stack_index, point_index);
+                double point1_deriv = get_const(finalStack, main_spline_stack_index, point_index + 1);
+                double point1_value = regArray[main_spline_reg_index + 1] != 2.0
+                    ? regArray[main_spline_reg_index + 3] // First point eval
+                    : finalStack->const_args[abs(get_const(finalStack, main_spline_stack_index, point_index + 2)) - 1]; // Second point eval
+                double point2_loc = get_const(finalStack, main_spline_stack_index, point_index + 3);
+                double point2_deriv = get_const(finalStack, main_spline_stack_index, point_index + 4);
+                double point2_value = regArray[main_spline_reg_index + 1] == 1.0
+                    ? finalStack->const_args[abs(get_const(finalStack, main_spline_stack_index, point_index + 5)) - 1] // First point eval
+                    : regArray[main_spline_reg_index + 1] == 2.0
+                    ? regArray[main_spline_reg_index + 3] // Second point eval
+                    : regArray[main_spline_reg_index + 2]; // Double point eval
+                regArray[finalStack->op_stack[pc].result_index] = spline_compute(point1_loc, point1_deriv, point1_value, point2_loc, point2_deriv, point2_value, coord);
+                //printf("fp %lf sp %lf info %lf %lf %lf\n", point1_value, point2_value, point2_loc, point2_deriv, regArray[main_spline_reg_index + 1]);
+                //printf("spline double arg %lf\n", regArray[finalStack->op_stack[pc].result_index]);
+                //fflush(stdout);
+                pc = -(finalStack->op_stack[pc].const_index + 1);
+            } else if (regArray[main_spline_reg_index + 1] == 4.0) {
+                // Double point eval case
+                regArray[main_spline_reg_index + 1]--; // Indicate phase 2 of double point eval
+                // Move point 2 value to prevent it from being overwritten
+                regArray[main_spline_reg_index + 2] = regArray[main_spline_reg_index + 3];
+                //int prev_point_index = (finalStack->op_stack[pc].arg_indexes[1] - 1) * 3;
+                //pc = get_const(finalStack, main_spline_stack_index, prev_point_index + 2);
+            }
+        }
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_blend_density:
+    op_interpolated:
+    op_cache_once:
+    op_flat_cache:
+    op_cache_2d:
+    op_cache_all_in_cell:
+        regArray[finalStack->op_stack[pc].result_index] = get_arg(finalStack, regArray, pc, 0);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+
+    op_blend_offset:
+        regArray[finalStack->op_stack[pc].result_index] = 0.0;
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+
+    op_blend_alpha:
+    op_end_islands:
+        regArray[finalStack->op_stack[pc].result_index] = 1.0;
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+
+    op_shift_a: {
+        int noise_index = get_const(finalStack, pc, 0);
+        regArray[finalStack->op_stack[pc].result_index] = 4.0 * generate_normal_noise(
+            &finalStack->noise_states[noise_index],
+            finalStack->noise_levels,
+            (double)x * 0.25,
+            0.0,
+            (double)z * 0.25
+        );
+        //printf("shift a %lf\n", regArray[finalStack->op_stack[pc].result_index]);
+        //fflush(stdout);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_shift_b: {
+        int noise_index = get_const(finalStack, pc, 0);
+        regArray[finalStack->op_stack[pc].result_index] = 4.0 * generate_normal_noise(
+            &finalStack->noise_states[noise_index],
+            finalStack->noise_levels,
+            (double)z * 0.25,
+            (double)x * 0.25,
+            0.0
+        );
+        //printf("shift b %lf\n", regArray[finalStack->op_stack[pc].result_index]);
+        //fflush(stdout);
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_old_blended_noise: {
+        double smear_scale_mult = get_const(finalStack, pc, 0);
+        double xz_factor = get_const(finalStack, pc, 1);
+        double xz_scale = get_const(finalStack, pc, 2) * 684.412;
+        double y_factor = get_const(finalStack, pc, 3);
+        double y_scale = get_const(finalStack, pc, 4) * 684.412;
+        double block_x_mul = (double)x * xz_scale;
+        double block_y_mul = (double)y * y_scale;
+        double block_z_mul = (double)z * xz_scale;
+        double block_x_fact = block_x_mul / xz_factor;
+        double block_y_fact = block_y_mul / y_factor;
+        double block_z_fact = block_z_mul / xz_factor;
+        double y_smear = y_scale * smear_scale_mult;
+        double y_smear_factor = y_smear / y_factor;
+
+        double noise_acc = 0.0;
+        double acc = 1.0;
+        for (int i = 0; i < 8; i++) {
+            ImprovedNoise* noise_level = get_perlin_noise_level(
+                &finalStack->noise_states[0].noises[1],
+                finalStack->noise_levels,
+                i
+            );
+            noise_acc += generate_improved_noise(
+                noise_level,
+                wrap(block_x_fact * acc),
+                wrap(block_y_fact * acc),
+                wrap(block_z_fact * acc),
+                y_smear_factor * acc,
+                block_y_fact * acc
+            ) / acc;
+            acc /= 2.0;
+        }
+
+        double noise_result = (1.0 + (noise_acc / 10.0)) / 2.0;
+        double min_noise_acc = 0.0;
+        double max_noise_acc = 0.0;
+        acc = 1.0;
+        for (int i = 0; i < 16; i++) {
+            double block_x_wrap = wrap(block_x_mul * acc);
+            double block_y_wrap = wrap(block_y_mul * acc);
+            double block_z_wrap = wrap(block_z_mul * acc);
+            double y_smear_adj = y_smear * acc;
+            double block_y_adj = block_y_mul * acc;
+            ImprovedNoise* noise_limit = get_perlin_noise_level(
+                &finalStack->noise_states[0].noises[0],
+                finalStack->noise_levels,
+                i
+            );
+            if (!(noise_result <= 0.0)) {
+                max_noise_acc += generate_improved_noise(
+                    noise_limit,
+                    block_x_wrap,
+                    block_y_wrap,
+                    block_z_wrap,
+                    y_smear_adj,
+                    block_y_adj
+                ) / acc;
+            }
+            if (!(noise_result >= 1.0)) {
+                min_noise_acc += generate_improved_noise(
+                    noise_limit + 16, // Assumes min/max perlin noise has 16 levels
+                    block_x_wrap,
+                    block_y_wrap,
+                    block_z_wrap,
+                    y_smear_adj,
+                    block_y_adj
+                ) / acc;
+            }
+            acc /= 2.0;
+        }
+        double final_result;
+        if (noise_result < 0.0) {
+            final_result = min_noise_acc / (double)(1 << 16);
+        } else if (noise_result > 1.0) {
+            final_result = max_noise_acc / (double)(1 << 16);
+        } else {
+            final_result = lerp(noise_result, min_noise_acc / 512.0, max_noise_acc / 512.0) / 128.0;
+        }
+
+        //printf("old blend noise %lf %lf %lf %lf\n", noise_result, min_noise_acc, max_noise_acc, final_result);
+        //fflush(stdout);
+        regArray[finalStack->op_stack[pc].result_index] = final_result;
+        goto *dispatch_table[finalStack->op_stack[--pc].op_type];
+    }
+
+    op_halt:
+        // printf("%lf\n", regArray[0]);
+        return regArray[0];
+
+    return 0.0;
 }

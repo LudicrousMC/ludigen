@@ -6,6 +6,7 @@ import net.minecraft.core.QuartPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.*;
 import net.minecraft.world.level.levelgen.blending.Blender;
@@ -141,7 +142,7 @@ public abstract class NoiseChunkMixin {
         this.firstNoiseX = QuartPos.fromBlock(chunkMinBlockX);
         this.firstNoiseZ = QuartPos.fromBlock(chunkMinBlockZ);
         this.noiseSizeXZ = QuartPos.fromBlock(cellCountXZ * this.cellWidth);
-        this.blender = blender;
+        this.blender = Blender.empty();
         this.beardifier = beardifier;
         if (!blender.isEmpty()) {
             this.blendAlpha = null;//new NoiseChunk.FlatCache(new NoiseChunk.BlendAlpha(), false);
@@ -184,9 +185,15 @@ public abstract class NoiseChunkMixin {
         this.fullNoiseDensity = fullNoiseValue;
         builder.add((NoiseChunk.BlockStateFiller)(context) -> {
             //double density = fullNoiseValue.compute(context);
+            //double density;
+            //if (context.blockY() % 8 == 0 && context.blockX() % 4 == 0 && context.blockZ() % 4 == 0) {
             double density = LudiGen.instance.evalDensityFunction(context.blockX(), context.blockY(), context.blockZ());
+            /*} else {
+                density = -0.5;
+            }*/
             BlockState result = this.aquifer.computeSubstance(context, density);
             return result;
+            //return Blocks.AIR.defaultBlockState();
         });
         if (settings.oreVeinsEnabled()) {
             builder.add(OreVeinifier.create(wrappedRouter.veinToggle(), wrappedRouter.veinRidged(), wrappedRouter.veinGap(), randomState.oreRandom()));

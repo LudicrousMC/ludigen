@@ -74,6 +74,12 @@ public class LudiGen implements ModInitializer {
         instance = LudicrousEngine.createInstance();
         instance.setDensityFunction(json.worldTypes.get("overworld").jsonDensityFunctions.get("final_density"));
         instance.setNoiseStates(NoiseStates.noiseStates, NoiseStates.noiseLevelStates);
+        long start = System.nanoTime();
+        //double densityTest = instance.evalDensityFunction(-5, 112, 60);
+        double densityTest = instance.evalDensityFunction(368, 105, 461);
+        long end = System.nanoTime();
+        System.out.println("density test: " + densityTest + " (-0.07504367162405336)");
+        System.out.println("time: " + (end - start));
         //LudicrousEngine.test();
         try {
             instance.registerShader("eval");

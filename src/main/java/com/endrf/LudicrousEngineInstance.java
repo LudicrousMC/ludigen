@@ -39,4 +39,8 @@ public class LudicrousEngineInstance {
     public double evalDensityFunction(int x, int y, int z) {
         return engine.evalDensityFunction(this.ptr, x, y, z);
     }
+
+    public double[] fillNoise(int minY, int height, int cellWidth, int cellHeight, int x, int z) {
+        return engine.fillNoise(this.ptr, minY, height, cellWidth, cellHeight, x, z);
+    }
 }

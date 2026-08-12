@@ -55,11 +55,11 @@ public class ChunkPyramidMixin {
                                 .addRequirement(ChunkStatus.BIOMES, 1)
                                 .blockStateWriteRadius(0)
                                 .setTask((WorldGenContext context, ChunkStep step, StaticCache2D<GenerationChunkHolder> chunks, ChunkAccess chunk) -> {
-                                    //long startTime = System.nanoTime();
+                                    long startTime = System.nanoTime();
                                     CompletableFuture<ChunkAccess> chunkFut = ChunkStatusTasks.generateNoise(context, step, chunks, chunk);
                                     chunkFut.join();
-                                    //long endTime = System.nanoTime();
-                                    //System.out.println(endTime - startTime);
+                                    long endTime = System.nanoTime();
+                                    System.out.println(endTime - startTime);
                                     return chunkFut;
                                 })
                 )

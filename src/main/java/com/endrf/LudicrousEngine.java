@@ -45,4 +45,6 @@ public class LudicrousEngine {
     native void setNoiseStates(long instance, ArrayList<NoiseStates.NormalNoiseState> noiseStates, ArrayList<NoiseStates.ImprovedNoiseState> noiseLevelStates);
 
     native double evalDensityFunction(long instance, int x, int y, int z);
+
+    native double[] fillNoise(long instance, int minY, int height, int cellWidth, int cellHeight, int x, int z);
 }

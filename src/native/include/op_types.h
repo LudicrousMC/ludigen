@@ -35,6 +35,8 @@
 #define OP_SHIFT_B              29
 #define OP_OLD_BLENDED_NOISE    30
 #define OP_END_ISLANDS          31
+// New operations go here and increment OP_HALT
+#define OP_HALT                 32
 
 #define OP_SUBTYPE_SPLINE       0
 #define OP_SUBTYPE_SPLINE_POINT 1
