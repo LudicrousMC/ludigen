@@ -1,12 +1,19 @@
 package com.endrf.operations;
 
+import java.util.Objects;
+
 public class CacheOnce implements OperationArg {
     public final static String TYPE = "minecraft:cache_once";
     private final String type = TYPE;
 
-    private final OperationArg argument;
+    public final OperationArg argument;
 
     public CacheOnce(OperationArg argument) {
         this.argument = argument;
+    }
+
+    @Override
+    public int getHash() {
+        return Objects.hash(this.type, this.argument.getHash());
     }
 }

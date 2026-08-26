@@ -1,5 +1,7 @@
 package com.endrf.operations;
 
+import java.util.Objects;
+
 public class YClampedGradient implements OperationArg {
     public final static String TYPE = "minecraft:y_clamped_gradient";
     private final String type = TYPE;
@@ -13,5 +15,10 @@ public class YClampedGradient implements OperationArg {
         this.toValue = toValue;
         this.fromY = fromY;
         this.toY = toY;
+    }
+
+    @Override
+    public int getHash() {
+        return Objects.hash(this.type, this.fromValue, this.toValue, this.fromY, this.toY);
     }
 }

@@ -45,7 +45,7 @@ target_include_directories(ludicrous_engine PRIVATE
 target_include_directories(stack_builder PRIVATE include)
 target_include_directories(test_cases PRIVATE include)
 
-target_compile_options(ludicrous_engine PRIVATE -O1 -march=native)
+target_compile_options(ludicrous_engine PRIVATE -O3 -march=native)
 
 set_target_properties(ludicrous_engine PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/build/output"

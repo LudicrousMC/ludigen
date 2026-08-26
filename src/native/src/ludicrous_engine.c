@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <semaphore.h>
 #include "ludicrous_engine.h"
 #include "op_stack.h"
 #include "op_types.h"
@@ -90,6 +91,7 @@ static InstanceState* create_instance(int queueFamilyType) {
         .shaders = malloc(0),
         .shaders_len = 0,
     };
+    sem_init(&state->fd_sem, 0, 1);
     return state;
 }
 
@@ -210,10 +212,19 @@ Node* build_tree_from_json_recursive(yyjson_val* json) {
         op_type == OP_HALF_NEGATIVE ||
         op_type == OP_QUARTER_NEGATIVE ||
         op_type == OP_INVERT ||
-        op_type == OP_SQUEEZE)
+        op_type == OP_SQUEEZE ||
+        op_type == OP_INTERPOLATED )
     {
         Node* arg1 = build_tree_from_json_recursive(yyjson_obj_get(json, "argument"));
         return create_op(op_type, &arg1, NULL);
+    }
+    if (op_type == OP_CACHE_ONCE ||
+        op_type == OP_FLAT_CACHE ||
+        op_type == OP_CACHE_2D)
+    {
+        Node* arg1 = build_tree_from_json_recursive(yyjson_obj_get(json, "argument"));
+        int index = yyjson_get_int(yyjson_obj_get(json, "index"));
+        return create_op(op_type, &arg1, (double[]){(double)index});
     }
     if (op_type == OP_CLAMP) {
         Node* input = build_tree_from_json_recursive(yyjson_obj_get(json, "input"));
@@ -282,10 +293,6 @@ Node* build_tree_from_json_recursive(yyjson_val* json) {
     }
     // Skips operations
     if (op_type == OP_BLEND_DENSITY ||
-        op_type == OP_INTERPOLATED ||
-        op_type == OP_CACHE_ONCE ||
-        op_type == OP_FLAT_CACHE ||
-        op_type == OP_CACHE_2D ||
         op_type == OP_CACHE_ALL_IN_CELL)
     {
         return build_tree_from_json_recursive(yyjson_obj_get(json, "argument"));
@@ -329,7 +336,7 @@ int main() {
 
     root = tree_to_vine(root);
     EvalStack* stack = generate_stack_wrapper(root);
-    double result = evaluate_stack(stack, 0, 0, 0);
+    double result = evaluate_stack(stack, 0, 0, 0, NULL);
     printf("registers: %d\n", stack->max_reg+1);
     printf("result: %.30lf\n", result);
 
@@ -358,12 +365,14 @@ typedef struct {
     ShaderBufferData buffers[] = {
         { .buf = const_args, .size = sizeof(double) * 1024,
           .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT},
+          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+          .sharing = VK_SHARING_MODE_EXCLUSIVE },
         { .buf = NULL, .size = sizeof(double) * 1024,
           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-          .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT },
+          .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .sharing = VK_SHARING_MODE_EXCLUSIVE },
         { .buf = NULL, .size = sizeof(double) * 1024, .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT }
+          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+          .sharing = VK_SHARING_MODE_EXCLUSIVE }
     };
     VkDescriptorSetLayoutBinding desc_set_layout[] = {
         { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -681,7 +690,301 @@ Java_com_endrf_LudicrousEngine_loadShader(JNIEnv* env, jclass cls, jlong instanc
     size_t len = (size_t)(*env)->GetDirectBufferCapacity(env, byteBuffer);
     //vulkan_test(spirvDataPtr, len);
     //log_info("test 1\n");
-    //create_shader(state, spirvDataPtr, len);
+    EvalStack* stack = state->final_density;
+    /* StackFrame frames[1] = {0};
+    frames[0] = (StackFrame){
+        .op_type = OP_ADD,
+        .arg_indexes = {-1, -2, 0},
+        .const_index = 0,
+        .result_index = 0
+    };
+    double const_args[2] = {0};
+    const_args[0] = 6.0;
+    const_args[1] = 7.0; */
+    ShaderBufferData buffers[] = {
+        // CPU Staging buffer for frames
+        { .buf = stack->op_stack, .size = sizeof(StackFrame) * stack->op_stack_len,
+          .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+          .sharing = VK_SHARING_MODE_EXCLUSIVE },
+        // GPU Storage buffer for frames
+        { .buf = NULL, .size = sizeof(StackFrame) * stack->op_stack_len,
+          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+          .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .sharing = VK_SHARING_MODE_EXCLUSIVE },
+        // CPU Staging buffer for const_args
+        { .buf = stack->const_args, .size = sizeof(double) * stack->const_args_len,
+          .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+          .sharing = VK_SHARING_MODE_EXCLUSIVE },
+        // GPU Storage buffer for const_args
+        { .buf = NULL, .size = sizeof(double) * stack->const_args_len,
+          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+          .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .sharing = VK_SHARING_MODE_EXCLUSIVE },
+        // CPU Staging buffer for noise_states
+        { .buf = stack->noise_states, .size = sizeof(NormalNoise) * stack->noise_states_len,
+          .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+          .sharing = VK_SHARING_MODE_EXCLUSIVE },
+        // GPU Storage buffer for noise_states
+        { .buf = NULL, .size = sizeof(NormalNoise) * stack->noise_states_len,
+          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+          .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .sharing = VK_SHARING_MODE_EXCLUSIVE },
+        // CPU Staging buffer for noise_levels
+        { .buf = stack->noise_levels, .size = sizeof(ImprovedNoise) * stack->noise_levels_len,
+          .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+          .sharing = VK_SHARING_MODE_EXCLUSIVE },
+        // GPU Storage buffer for noise_levels
+        { .buf = NULL, .size = sizeof(ImprovedNoise) * stack->noise_levels_len,
+          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+          .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .sharing = VK_SHARING_MODE_EXCLUSIVE },
+        // GPU Storage buffer for output
+        { .buf = NULL, .size = sizeof(double) * 98304,
+          .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+          .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .sharing = VK_SHARING_MODE_EXCLUSIVE },
+        // CPU Staging buffer for output
+        { .buf = NULL, .size = sizeof(double) * 98304,
+          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+          .sharing = VK_SHARING_MODE_EXCLUSIVE }
+    };
+    VkDescriptorSetLayoutBinding desc_set_layout[] = {
+        { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+        { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+        { .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+        { .binding = 3, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
+        { .binding = 4, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT }
+    };
+    ShaderDescriptorLayout desc_layouts[] = {
+        { .bindings = desc_set_layout,
+          .num_bindings = sizeof(desc_set_layout) / sizeof(desc_set_layout[0]) }
+    };
+    ShaderDescriptorSetUpdate desc_updates[] = {
+        { .desc_index = 0, .mem_indexes = (size_t[]){1},
+          .buf_indexes = (size_t[]){0}, .desc_count = 1, .set_index = 0 },
+        { .desc_index = 1, .mem_indexes = (size_t[]){3},
+          .buf_indexes = (size_t[]){0}, .desc_count = 1, .set_index = 0 },
+        { .desc_index = 2, .mem_indexes = (size_t[]){5},
+          .buf_indexes = (size_t[]){0}, .desc_count = 1, .set_index = 0 },
+        { .desc_index = 3, .mem_indexes = (size_t[]){7},
+          .buf_indexes = (size_t[]){0}, .desc_count = 1, .set_index = 0 },
+        { .desc_index = 4, .mem_indexes = (size_t[]){8},
+          .buf_indexes = (size_t[]){0}, .desc_count = 1, .set_index = 0 }
+    };
+    VkSpecializationInfo spec = {
+        .mapEntryCount = 1,
+        .pMapEntries = &(VkSpecializationMapEntry){
+            .constantID = 0, .offset = 0, .size = sizeof(uint32_t) },
+        .dataSize = sizeof(uint32_t),
+        .pData = &(int){stack->max_reg + 1}
+    };
+    ShaderCreateData create_data = {
+        .buffers = buffers,
+        .num_buffers = sizeof(buffers) / sizeof(buffers[0]),
+        .desc_layouts = desc_layouts,
+        .num_desc_layouts = sizeof(desc_layouts) / sizeof(desc_layouts[0]),
+        .desc_updates = desc_updates,
+        .num_desc_updates = sizeof(desc_updates) / sizeof(desc_updates[0]),
+        .spec = &spec
+    };
+    ShaderData* shader = (ShaderData*)malloc(sizeof(ShaderData));
+    create_shader(state, spirvDataPtr, len, &create_data, shader);
+
+    vkBeginCommandBuffer(shader->vk_cmd, &(VkCommandBufferBeginInfo){
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT
+    });
+    // Copy frames staging buffer to GPU
+    vkCmdCopyBuffer(
+        shader->vk_cmd,
+        shader->shader_mem[0].vk_buf[0],
+        shader->shader_mem[1].vk_buf[0],
+        1,
+        &(VkBufferCopy){ .size = sizeof(StackFrame) * stack->op_stack_len }
+    );
+    // Copy const_args staging buffer to GPU
+    vkCmdCopyBuffer(
+        shader->vk_cmd,
+        shader->shader_mem[2].vk_buf[0],
+        shader->shader_mem[3].vk_buf[0],
+        1,
+        &(VkBufferCopy){ .size = sizeof(double) * stack->const_args_len }
+    );
+    // Copy noise_levels staging buffer to GPU
+    vkCmdCopyBuffer(
+        shader->vk_cmd,
+        shader->shader_mem[4].vk_buf[0],
+        shader->shader_mem[5].vk_buf[0],
+        1,
+        &(VkBufferCopy){ .size = sizeof(NormalNoise) * stack->noise_states_len }
+    );
+    // Copy noise_levels staging buffer to GPU
+    vkCmdCopyBuffer(
+        shader->vk_cmd,
+        shader->shader_mem[6].vk_buf[0],
+        shader->shader_mem[7].vk_buf[0],
+        1,
+        &(VkBufferCopy){ .size = sizeof(ImprovedNoise) * stack->noise_levels_len }
+    );
+    vkCmdBindPipeline(shader->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shader->vk_pipeline);
+    vkCmdBindDescriptorSets(
+        shader->vk_cmd,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        shader->vk_pipeline_layout,
+        0,
+        shader->vk_desc_sets_len,
+        shader->vk_desc_sets,
+        0,
+        NULL
+    );
+    VkBufferMemoryBarrier barriers[4] = {
+        {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = shader->shader_mem[1].vk_buf[0],
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = shader->shader_mem[3].vk_buf[0],
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = shader->shader_mem[5].vk_buf[0],
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+        },
+        {
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = shader->shader_mem[7].vk_buf[0],
+            .offset = 0,
+            .size = VK_WHOLE_SIZE,
+        },
+    };
+
+    vkCmdPipelineBarrier(
+        shader->vk_cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        0, NULL,
+        4, barriers,
+        0, NULL
+    );
+    vkCmdPushConstants(
+        shader->vk_cmd,
+        shader->vk_pipeline_layout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        0,
+        sizeof(int) * 3,
+        &(int[]){0, 0, 0}
+    );
+    vkCmdDispatch(shader->vk_cmd, 98304 / 64, 1, 1);
+    VkBufferMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = shader->shader_mem[8].vk_buf[0],
+        .offset = 0,
+        .size = VK_WHOLE_SIZE
+    };
+    vkCmdPipelineBarrier(
+        shader->vk_cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0,
+        0, NULL,
+        1, &barrier,
+        0, NULL
+    );
+    // Copy GPU output buffer to CPU
+    vkCmdCopyBuffer(
+        shader->vk_cmd,
+        shader->shader_mem[8].vk_buf[0],
+        shader->shader_mem[9].vk_buf[0],
+        1,
+        &(VkBufferCopy){ .srcOffset = 0, .dstOffset = 0, .size = sizeof(double) * 98304 }
+    );
+    vkEndCommandBuffer(shader->vk_cmd);
+
+    VkFence fence;
+    vkCreateFence(state->vk_device,
+        &(VkFenceCreateInfo){
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+        },
+        NULL, &fence
+    );
+    int* tmp = realloc(state->shaders, state->shaders_len + 1);
+    if (tmp != NULL) {
+        state->shaders[state->shaders_len] = shader;
+        state->shaders_len++;
+    }
+    state->fd_fence = fence;
+    vkQueueSubmit(state->vk_queue, 1,
+        &(VkSubmitInfo){
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &(shader->vk_cmd)
+        },
+        fence
+    );
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+
+    vkWaitForFences(state->vk_device, 1, &fence, VK_TRUE, UINT64_MAX);
+
+    double* results;
+    vkMapMemory(
+        state->vk_device,
+        shader->shader_mem[9].vk_mem,
+        0,
+        sizeof(double) * 98304,
+        0,
+        (void**)&results
+    );
+    clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+
+    printf("GPU out[0]=%lf  out[1]=%lf  out[98303]=%lf\n",
+           results[0], results[1], results[98303]);
+    printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
+    fflush(stdout);
+    vkUnmapMemory(state->vk_device, shader->shader_mem[9].vk_mem);
+    double* test_arr = (double*)malloc(sizeof(double) * 98304);
+
+    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+    for (int i = 0; i < 98304; i++) {
+        test_arr[i] = evaluate_stack(stack, i, 70, 0, NULL);
+    }
+    clock_gettime(CLOCK_MONOTONIC_RAW, &end);
+    printf("CPU out[0]=%lf  out[1]=%lf  out[98303]=%lf\n",
+               test_arr[0], test_arr[1], test_arr[98303]);
+    printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
+    fflush(stdout);
 }
 
 JNIEXPORT jlong JNICALL
@@ -707,7 +1010,7 @@ Java_com_endrf_LudicrousEngine_setDensityFunction(JNIEnv* env, jclass cls, jlong
 
     //root = tree_to_vine(root);
     EvalStack* stack = generate_stack_wrapper(root);
-    state->data = (void*)stack;
+    state->final_density = stack;
     //double result = evaluate_stack(stack, 0, 0, 0);
     printf("registers: %d\n", stack->max_reg+1);
     //printf("result: %.30lf\n", result);
@@ -782,9 +1085,12 @@ Java_com_endrf_LudicrousEngine_setNoiseStates(JNIEnv* env, jclass cls, jlong ins
         memcpy(noiseLevels[i].values, values, 256);
         memcpy(noiseLevels[i].values + 256, values, 256);
     }
-    EvalStack* stack = (EvalStack*)state->data;
+    EvalStack* stack = state->final_density;
     stack->noise_states = noiseStates;
+    stack->noise_states_len = noiseStatesSize;
     stack->noise_levels = noiseLevels;
+    stack->noise_levels_len = noiseLevelsSize;
+
     struct timespec start, end;
     double result;
     clock_gettime(CLOCK_MONOTONIC_RAW, &start);
@@ -796,6 +1102,97 @@ Java_com_endrf_LudicrousEngine_setNoiseStates(JNIEnv* env, jclass cls, jlong ins
     fflush(stdout);
 }
 
+JNIEXPORT void JNICALL
+Java_com_endrf_LudicrousEngine_fillNoiseAccel(JNIEnv* env, jclass cls, jlong instancePtr, jint min_y, jint height, jint cell_width, jint cell_height, jint x, jint z, jdoubleArray j_densities) {
+    InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
+    int size = height * 16 * 16;
+    sem_wait(&state->fd_sem);
+    vkResetCommandBuffer(state->shaders[0]->vk_cmd, 0);
+    vkResetFences(state->vk_device, 1, &state->fd_fence);
+    vkBeginCommandBuffer(state->shaders[0]->vk_cmd, &(VkCommandBufferBeginInfo){
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT
+    });
+    vkCmdBindPipeline(state->shaders[0]->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, state->shaders[0]->vk_pipeline);
+    vkCmdBindDescriptorSets(
+        state->shaders[0]->vk_cmd,
+        VK_PIPELINE_BIND_POINT_COMPUTE,
+        state->shaders[0]->vk_pipeline_layout,
+        0,
+        state->shaders[0]->vk_desc_sets_len,
+        state->shaders[0]->vk_desc_sets,
+        0,
+        NULL
+    );
+    vkCmdPushConstants(
+        state->shaders[0]->vk_cmd,
+        state->shaders[0]->vk_pipeline_layout,
+        VK_SHADER_STAGE_COMPUTE_BIT,
+        0,
+        sizeof(int) * 3,
+        &(int[]){x, min_y, z}
+    );
+    vkCmdDispatch(state->shaders[0]->vk_cmd, size / 64, 1, 1);
+    vkCmdPipelineBarrier(
+        state->shaders[0]->vk_cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, NULL, 1,
+        &(VkBufferMemoryBarrier){
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = state->shaders[0]->shader_mem[8].vk_buf[0],
+            .offset = 0,
+            .size = VK_WHOLE_SIZE
+        },
+        0, NULL
+    );
+    // Copy GPU output buffer to CPU
+    vkCmdCopyBuffer(
+        state->shaders[0]->vk_cmd,
+        state->shaders[0]->shader_mem[8].vk_buf[0],
+        state->shaders[0]->shader_mem[9].vk_buf[0],
+        1,
+        &(VkBufferCopy){ .srcOffset = 0, .dstOffset = 0, .size = sizeof(double) * size }
+    );
+    vkEndCommandBuffer(state->shaders[0]->vk_cmd);
+    vkQueueSubmit(state->vk_queue, 1,
+        &(VkSubmitInfo){
+            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+            .commandBufferCount = 1,
+            .pCommandBuffers = &(state->shaders[0]->vk_cmd)
+        },
+        state->fd_fence
+    );
+    vkWaitForFences(state->vk_device, 1, &state->fd_fence, VK_TRUE, UINT64_MAX);
+    double* densities;
+    vkMapMemory(
+        state->vk_device,
+        state->shaders[0]->shader_mem[9].vk_mem,
+        0,
+        sizeof(double) * size,
+        0,
+        (void**)&densities
+    );
+    /* jdoubleArray j_densities = (*env)->NewDoubleArray(env, size);
+    if (j_densities == NULL) {
+        return NULL;
+    }*/
+    jdouble* dst = (*env)->GetPrimitiveArrayCritical(env, j_densities, NULL);
+    if (dst == NULL) {
+        return;
+    }
+    memcpy(dst, densities, size * sizeof(jdouble));
+    (*env)->ReleasePrimitiveArrayCritical(env, j_densities, dst, 0);
+    //(*env)->SetDoubleArrayRegion(env, j_densities, 0, size, (jdouble*)densities);
+    vkUnmapMemory(state->vk_device, state->shaders[0]->shader_mem[0].vk_mem);
+    sem_post(&state->fd_sem);
+    //free(densities);
+}
+
 JNIEXPORT jdoubleArray JNICALL
 Java_com_endrf_LudicrousEngine_fillNoise(JNIEnv* env, jclass cls, jlong instancePtr, jint min_y, jint height, jint cell_width, jint cell_height, jint x, jint z) {
     InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
@@ -803,24 +1200,120 @@ Java_com_endrf_LudicrousEngine_fillNoise(JNIEnv* env, jclass cls, jlong instance
     //clock_gettime(CLOCK_MONOTONIC_RAW, &start);
     int max_y = height + min_y;
     int xz_samples = (16 / cell_width) + 1;
-    int y_samples = (height / cell_height) + 1;
+
+
+    int size = height * 16 * 16;
+    double* densities = (double*)malloc(size * sizeof(double));
+    int num_interp_functions = state->final_density->interp_len;
+    int num_cache_once_functions = state->final_density->cache_once_len;
+    int num_cache_flat_functions = state->final_density->cache_flat_len;
+    int num_cache_2d_functions = state->final_density->cache_2d_len;
+
+    EvalCache eval_cache;
+    if (num_interp_functions == 0) {
+        eval_cache = (EvalCache){0};
+    } else {
+        double* nan_template = (double*)malloc(num_interp_functions * sizeof(double));
+        fill_nan(nan_template, num_interp_functions);
+        int interp_size = xz_samples * xz_samples * num_interp_functions;
+        double* interp = (double*)malloc(interp_size * sizeof(double));
+        fill_nan(interp, interp_size);
+        double* active_cell_top = (double*)malloc(4 * num_interp_functions * sizeof(double));
+        fill_nan(active_cell_top, 4 * num_interp_functions);
+        int cache_once_size = (height + cell_height + 1) * 17 * 17 * num_cache_once_functions;
+        double* cache_once = (double*)malloc(cache_once_size * sizeof(double));
+        fill_nan(cache_once, cache_once_size);
+        int cache_flat_size = xz_samples * xz_samples * num_cache_flat_functions;
+        double* cache_flat = (double*)malloc(cache_flat_size * sizeof(double));
+        fill_nan(cache_flat, cache_flat_size);
+        int cache_2d_size = 17 * 17 * num_cache_2d_functions;
+        double* cache_2d = (double*)malloc(cache_2d_size * sizeof(double));
+        fill_nan(cache_2d, cache_2d_size);
+
+
+        eval_cache = (EvalCache){
+            .interp_enabled = 1,
+            .cache_once_enabled = 1,
+            .cache_flat_enabled = 1,
+            .cache_2d_enabled = 1,
+            .cell_width = cell_width,
+            .cell_height = cell_height,
+            .xz_samples = xz_samples,
+            .min_y = min_y,
+            .num_interp_functions = num_interp_functions,
+            .nan_template = nan_template,
+            .interp = interp,
+            .active_cell_top = active_cell_top,
+            .cell_x = 0,
+            .cell_z = 0,
+            .num_cache_once_functions = num_cache_once_functions,
+            .cache_once = cache_once,
+            .num_cache_flat_functions = num_cache_flat_functions,
+            .cache_flat = cache_flat,
+            .num_cache_2d_functions = num_cache_2d_functions,
+            .cache_2d = cache_2d
+        };
+    }
+
+    /* int y_samples = (height / cell_height) + 2;
     int sample_size = y_samples * xz_samples * xz_samples;
     double* samples = (double*)malloc(sample_size * sizeof(double));
     for (int y_in_chunk = min_y, y_index = 0; y_in_chunk <= max_y + 1; y_in_chunk += cell_height, y_index++) {
         for (int z_in_chunk = 0, z_index = 0; z_in_chunk <= 16; z_in_chunk += cell_width, z_index++) {
             for (int x_in_chunk = 0, x_index = 0; x_in_chunk <= 16; x_in_chunk += cell_width, x_index++) {
-                samples[(y_index * xz_samples * xz_samples) + (z_index * xz_samples) + x_index] = evaluate_stack((EvalStack*)state->data, x + x_in_chunk, y_in_chunk, z + z_in_chunk);
+                samples[(y_index * xz_samples * xz_samples) + (z_index * xz_samples) + x_index] = evaluate_stack((EvalStack*)state->data, x + x_in_chunk, y_in_chunk, z + z_in_chunk, &eval_cache);
+                //reset_cache_once(&eval_cache);
+                eval_cache.cell_x++;
+            }
+            eval_cache.cell_x = 0;
+            eval_cache.cell_z++;
+        }
+        eval_cache.cell_x = 0;
+        eval_cache.cell_z = 0;
+    } */
+
+    int num_y_cells = height / cell_height;
+    int num_z_cells = 16 / cell_width;
+    int num_x_cells = 16 / cell_width;
+    for (int cell_y = 0; cell_y < num_y_cells; cell_y++) {
+        for (int cell_z = 0; cell_z < num_z_cells; cell_z++) {
+            for (int cell_x = 0; cell_x < num_x_cells; cell_x++) {
+                for (int block_y = 0; block_y < cell_height; block_y++) {
+                    int y_in_chunk = cell_y * cell_height + block_y;
+                    if (y_in_chunk + min_y == max_y)
+                        goto end_loop;
+                    for (int block_z = 0; block_z < cell_width; block_z++) {
+                        int z_in_chunk = cell_z * cell_width + block_z;
+                        for (int block_x = 0; block_x < cell_width; block_x++) {
+                            int x_in_chunk = cell_x * cell_width + block_x;
+                            densities[
+                                y_in_chunk * 256 +
+                                z_in_chunk * 16 +
+                                x_in_chunk
+                            ] = evaluate_stack(state->final_density, x + x_in_chunk, y_in_chunk + min_y, z + z_in_chunk, &eval_cache);
+                        }
+                    }
+                }
+                if (cell_x != num_x_cells - 1)
+                    advance_cell_x(&eval_cache);
+            }
+            if (cell_z != num_z_cells - 1) {
+                advance_cell_z(&eval_cache);
             }
         }
+        if (cell_y != num_y_cells - 1) {
+            advance_cell_y(&eval_cache);
+        }
     }
+    end_loop:
 
-    int size = (height + 1) * 16 * 16;
-    double* densities = (double*)malloc(size * sizeof(double));
-    for (int y_in_chunk = min_y, y_index = 0; y_in_chunk <= max_y; y_in_chunk++, y_index++) {
+    /* for (int y_in_chunk = min_y, y_index = 0; y_in_chunk <= max_y; y_in_chunk++, y_index++) {
         for (int z_in_chunk = 0; z_in_chunk < 16; z_in_chunk++) {
             for (int x_in_chunk = 0; x_in_chunk < 16; x_in_chunk++) {
                 if (y_index % 8 == 0 && z_in_chunk % 4 == 0 && x_in_chunk % 4 == 0) {
-                    densities[(y_index * 256) + (z_in_chunk * 16) + x_in_chunk] = samples[(y_index * xz_samples * xz_samples / 8) + (z_in_chunk * xz_samples / 4) + (x_in_chunk / 4)];
+                    int density_index = (y_index * 256) + (z_in_chunk * 16) + x_in_chunk;
+                    int sample_index = (y_index * xz_samples * xz_samples / 8) + (z_in_chunk * xz_samples / 4) + (x_in_chunk / 4);
+                    densities[density_index] = samples[sample_index];
                     continue;
                 }
 
@@ -857,19 +1350,32 @@ Java_com_endrf_LudicrousEngine_fillNoise(JNIEnv* env, jclass cls, jlong instance
                 double z0 = lerp(pos_z, x00, x01);
                 double z1 = lerp(pos_z, x10, x11);
 
-                densities[(y_index * 256) + (z_in_chunk * 16) + x_in_chunk] = lerp(pos_y, z0, z1);
+                int density_index = (y_index * 256) + (z_in_chunk * 16) + x_in_chunk;
+                densities[density_index] = lerp(pos_y, z0, z1);
             }
         }
-    }
+    } */
 
     jdoubleArray j_densities = (*env)->NewDoubleArray(env, size);
     if (j_densities == NULL) {
         free(densities);
         return NULL;
     }
-    (*env)->SetDoubleArrayRegion(env, j_densities, 0, size, (jdouble*)densities);
+    jdouble* dst = (*env)->GetPrimitiveArrayCritical(env, j_densities, NULL);
+    if (dst == NULL) {
+        return NULL;
+    }
+    memcpy(dst, densities, size * sizeof(jdouble));
+    (*env)->ReleasePrimitiveArrayCritical(env, j_densities, dst, 0);
+    //(*env)->SetDoubleArrayRegion(env, j_densities, 0, size, (jdouble*)densities);
     free(densities);
-    free(samples);
+    //free(samples);
+    free(eval_cache.nan_template);
+    free(eval_cache.interp);
+    free(eval_cache.active_cell_top);
+    free(eval_cache.cache_once);
+    free(eval_cache.cache_flat);
+    free(eval_cache.cache_2d);
     //clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     //printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
     //fflush(stdout);
@@ -881,7 +1387,9 @@ Java_com_endrf_LudicrousEngine_evalDensityFunction(JNIEnv* env, jclass cls, jlon
     InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
     //struct timespec start, end;
     //clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-    double result = evaluate_stack((EvalStack*)state->data, x, y, z);
+    double result = evaluate_stack(state->final_density, x, y, z, NULL);
+    //printf("num interps %d\n", ((EvalStack*)state->data)->cache_once_len);
+    //fflush(stdout);
     //clock_gettime(CLOCK_MONOTONIC_RAW, &end);
     //printf("registers: %d\n", ((EvalStack*)state->data)->max_reg+1);
     //printf("result: %.30lf\n", result);

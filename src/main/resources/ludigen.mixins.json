@@ -4,8 +4,8 @@
   "compatibilityLevel": "JAVA_25",
   "mixins": [
     "ChunkPyramidMixin",
-    "NoiseChunkMixin",
     "NoiseBasedChunkGeneratorMixin",
+    "NoiseChunkMixin",
     "ExampleMixin",
     "NormalNoiseAccessor",
     "PerlinNoiseAccessor",

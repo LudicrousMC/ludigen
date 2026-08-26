@@ -5,7 +5,7 @@
 #include "util.h"
 
 typedef struct {
-    int x, y, z;
+    int8_t x, y, z;
 } Gradient;
 
 const Gradient SIMPLEX_GRADIENT[16] = {
@@ -57,37 +57,37 @@ static inline double sample_plus_lerp(
     double y_real1 = y_real_offset - 1.0;
     double z_real1 = z_real - 1.0;
     Gradient s000 = SIMPLEX_GRADIENT[xyz000];
-    double d000 = (double)s000.x * x_real
-                + (double)s000.y * y_real_offset
-                + (double)s000.z * z_real;
+    double d000 = s000.x * x_real
+                + s000.y * y_real_offset
+                + s000.z * z_real;
     Gradient s100 = SIMPLEX_GRADIENT[xyz100];
-    double d100 = (double)s100.x * x_real1
-                + (double)s100.y * y_real_offset
-                + (double)s100.z * z_real;
+    double d100 = s100.x * x_real1
+                + s100.y * y_real_offset
+                + s100.z * z_real;
     Gradient s010 = SIMPLEX_GRADIENT[xyz010];
-    double d010 = (double)s010.x * x_real
-                + (double)s010.y * y_real1
-                + (double)s010.z * z_real;
+    double d010 = s010.x * x_real
+                + s010.y * y_real1
+                + s010.z * z_real;
     Gradient s110 = SIMPLEX_GRADIENT[xyz110];
-    double d110 = (double)s110.x * x_real1
-                + (double)s110.y * y_real1
-                + (double)s110.z * z_real;
+    double d110 = s110.x * x_real1
+                + s110.y * y_real1
+                + s110.z * z_real;
     Gradient s001 = SIMPLEX_GRADIENT[xyz001];
-    double d001 = (double)s001.x * x_real
-                + (double)s001.y * y_real_offset
-                + (double)s001.z * z_real1;
+    double d001 = s001.x * x_real
+                + s001.y * y_real_offset
+                + s001.z * z_real1;
     Gradient s101 = SIMPLEX_GRADIENT[xyz101];
-    double d101 = (double)s101.x * x_real1
-                + (double)s101.y * y_real_offset
-                + (double)s101.z * z_real1;
+    double d101 = s101.x * x_real1
+                + s101.y * y_real_offset
+                + s101.z * z_real1;
     Gradient s011 = SIMPLEX_GRADIENT[xyz011];
-    double d011 = (double)s011.x * x_real
-                + (double)s011.y * y_real1
-                + (double)s011.z * z_real1;
+    double d011 = s011.x * x_real
+                + s011.y * y_real1
+                + s011.z * z_real1;
     Gradient s111 = SIMPLEX_GRADIENT[xyz111];
-    double d111 = (double)s111.x * x_real1
-                + (double)s111.y * y_real1
-                + (double)s111.z * z_real1;
+    double d111 = s111.x * x_real1
+                + s111.y * y_real1
+                + s111.z * z_real1;
 
     return lerp3(
         smoothstep(x_real),

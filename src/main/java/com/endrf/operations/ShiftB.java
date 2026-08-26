@@ -1,5 +1,7 @@
 package com.endrf.operations;
 
+import java.util.Objects;
+
 public class ShiftB implements OperationArg {
     public final static String TYPE = "minecraft:shift_b";
     private final String type = TYPE;
@@ -12,5 +14,10 @@ public class ShiftB implements OperationArg {
 
     public String getNoisePath() {
         return this.argument;
+    }
+
+    @Override
+    public int getHash() {
+        return Objects.hash(this.type, this.argument);
     }
 }

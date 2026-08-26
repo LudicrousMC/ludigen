@@ -76,7 +76,8 @@ public class LudiGen implements ModInitializer {
         instance.setNoiseStates(NoiseStates.noiseStates, NoiseStates.noiseLevelStates);
         long start = System.nanoTime();
         //double densityTest = instance.evalDensityFunction(-5, 112, 60);
-        double densityTest = instance.evalDensityFunction(368, 105, 461);
+        //double densityTest = instance.evalDensityFunction(368, 105, 461);
+        double densityTest = instance.evalDensityFunction(-228, 82, 82);
         long end = System.nanoTime();
         System.out.println("density test: " + densityTest + " (-0.07504367162405336)");
         System.out.println("time: " + (end - start));

@@ -63,6 +63,7 @@ typedef struct ShaderCreateData {
     int num_desc_layouts;
     ShaderDescriptorSetUpdate* desc_updates;
     int num_desc_updates;
+    VkSpecializationInfo* spec;
 } ShaderCreateData;
 
 int create_shader(InstanceState* state, uint32_t* spirv, size_t spirv_size, ShaderCreateData* data, ShaderData* shader);

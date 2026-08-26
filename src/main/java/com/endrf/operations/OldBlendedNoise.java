@@ -1,5 +1,7 @@
 package com.endrf.operations;
 
+import java.util.Objects;
+
 public class OldBlendedNoise implements OperationArg {
     public final static String TYPE = "minecraft:old_blended_noise";
     private final String type = TYPE;
@@ -16,5 +18,10 @@ public class OldBlendedNoise implements OperationArg {
         this.xzScale = xzScale;
         this.yFactor = yFactor;
         this.yScale = yScale;
+    }
+
+    @Override
+    public int getHash() {
+        return Objects.hash(this.type, this.smearScaleMultiplier, this.xzFactor, this.xzScale, this.yFactor, this.yScale);
     }
 }

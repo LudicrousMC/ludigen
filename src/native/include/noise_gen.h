@@ -15,14 +15,16 @@ struct ImprovedNoise {
     double y;
     double z;
     double amplitude;
-    uint8_t values[512];
+    uint8_t values[512]; // 256 duplicated values for modulus reduction (& 0xFF/255)
     uint8_t disabled;
 };
 
+#ifndef SHADER
 struct ImprovedNoiseWrapper {
     ImprovedNoise* noise_levels;
     int index;
 };
+#endif
 
 struct PerlinNoise {
     double lowest_freq_value_factor;
@@ -37,6 +39,7 @@ struct NormalNoise {
     double value_factor;
 };
 
+#ifndef SHADER
 double generate_improved_noise(
     ImprovedNoise* noise,
     double x,
@@ -67,5 +70,6 @@ double generate_normal_noise(
 static inline double wrap(double val) {
     return val - floor((val / (double)(1 << 25)) + 0.5) * (double)(1 << 25);
 }
+#endif
 
 #endif

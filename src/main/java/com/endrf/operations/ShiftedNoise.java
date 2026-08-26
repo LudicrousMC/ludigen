@@ -1,5 +1,7 @@
 package com.endrf.operations;
 
+import java.util.Objects;
+
 public class ShiftedNoise implements OperationArg {
     public final static String TYPE = "minecraft:shifted_noise";
     private final String type = TYPE;
@@ -22,5 +24,10 @@ public class ShiftedNoise implements OperationArg {
 
     public String getNoisePath() {
         return this.noise;
+    }
+
+    @Override
+    public int getHash() {
+        return Objects.hash(this.type, this.xzScale, this.yScale, this.noise, this.shiftX.getHash(), this.shiftY.getHash(), this.shiftZ.getHash());
     }
 }

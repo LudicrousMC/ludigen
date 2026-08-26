@@ -1,5 +1,7 @@
 package com.endrf.operations;
 
+import java.util.Objects;
+
 public class RangeChoice implements OperationArg {
     public final static String TYPE = "minecraft:range_choice";
     private final String type = TYPE;
@@ -17,5 +19,10 @@ public class RangeChoice implements OperationArg {
         this.maxExclusive = maxExclusive;
         this.whenInRange = whenInRange;
         this.whenOutOfRange = whenOutOfRange;
+    }
+
+    @Override
+    public int getHash() {
+        return Objects.hash(this.type, this.minInclusive, this.maxExclusive, this.input.getHash(), this.whenInRange.getHash(), this.whenOutOfRange.getHash());
     }
 }

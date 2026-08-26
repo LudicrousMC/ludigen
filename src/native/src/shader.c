@@ -78,8 +78,8 @@ int create_shader(InstanceState* state, uint32_t* spirv, size_t spirv_size, Shad
               .usage = buffers[i].usage, .sharingMode = buffers[i].sharing },
             buffers[i].flags
         );
-        if (buffers[i].buf == NULL) continue;
-        map_shader_memory(state, shader_mem[i].vk_mem, buffers[i].buf, buffers[i].size);
+        if (buffers[i].buf != NULL)
+            map_shader_memory(state, shader_mem[i].vk_mem, buffers[i].buf, buffers[i].size);
     }
 
     // <-- Create Descriptor Set Layouts for Shader Pipeline Layout and DS Allocation -->
@@ -109,7 +109,8 @@ int create_shader(InstanceState* state, uint32_t* spirv, size_t spirv_size, Shad
     vkCreateComputePipelines(state->vk_device, VK_NULL_HANDLE, 1, &(VkComputePipelineCreateInfo)
         { .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
           .stage = { .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                     .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = shader_mod, .pName = "main" },
+                     .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = shader_mod,
+                     .pName = "main", .pSpecializationInfo = data->spec },
           .layout = pipeline_layout },
         NULL, &pipeline
     );

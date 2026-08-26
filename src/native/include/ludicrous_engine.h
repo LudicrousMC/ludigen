@@ -1,5 +1,6 @@
 #ifndef LUDICROUS_ENGINE_H
 #define LUDICROUS_ENGINE_H
+#include <semaphore.h>
 #include <vulkan/vulkan.h>
 #include "stack_builder.h"
 #include "yyjson.h"
@@ -20,7 +21,9 @@ typedef struct InstanceState {
     // Shader pipelines and related data
     ShaderData** shaders;
     size_t shaders_len;
-    void* data;
+    EvalStack* final_density;
+    VkFence fd_fence;
+    sem_t fd_sem;
 } InstanceState;
 
 Node* build_tree_from_json_recursive(yyjson_val* json);

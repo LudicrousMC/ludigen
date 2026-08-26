@@ -21,12 +21,4 @@ struct StackFrame {
     uint8_t result_index;
 };
 
-struct EvalState {
-    int x;
-    int y;
-    int z;
-    int stack_offset;
-    double result_register[80];
-};
-
 #endif

@@ -1,4 +1,5 @@
 #version 450
+#extension GL_EXT_shader_explicit_arithmetic_types : enable
 #extension GL_EXT_shader_8bit_storage : enable
 #extension GL_EXT_shader_16bit_storage : enable
 #extension GL_EXT_scalar_block_layout : enable
@@ -7,27 +8,748 @@
 
 #define SHADER
 #include "op_stack.h"
+#include "op_types.h"
+#include "noise_gen.h"
 
 layout (local_size_x = 64) in;
+layout (constant_id = 0) const uint REGISTERS = 1;
+shared double regs[gl_WorkGroupSize.x * REGISTERS];
+layout (push_constant) uniform PushConstants {
+    ivec3 coords;
+};
 
-/*layout (std140, binding = 0 uniform Information {
-    int stackLen;
-} info;*/
+layout (std430, set = 0, binding = 0) readonly buffer FramesBuffer {
+    StackFrame frames[];
+};
 
-/*layout (std430, binding = 0) readonly buffer StackBuffer {
-    StackFrame data[];
-} stack;*/
+layout (std430, set = 0, binding = 1) readonly buffer ConstArgsBuffer {
+    double const_args[];
+};
 
-layout (std430, set = 0, binding = 0) readonly buffer ConstArgsBuffer {
-    double data[];
-} const_args;
+layout (std430, set = 0, binding = 2) readonly buffer NoiseStatesBuffer {
+    NormalNoise noise_states[];
+};
 
-layout (std430, set = 0, binding = 1) writeonly buffer OutputBuffer {
-    double data[];
-} buf_out;
+layout (std430, set = 0, binding = 3) readonly buffer NoiseLevelsBuffer {
+    ImprovedNoise noise_levels[];
+};
+
+layout (std430, set = 0, binding = 4) writeonly buffer OutputBuffer {
+    double buf_out[];
+};
+
+double lerp(double pos, double x0, double x1);
+double inverse_lerp(double pos, double x, double y);
+double clamped_map(
+    double pos1,
+    double x,
+    double y,
+    double val1,
+    double val2
+);
+float linear_ext_if_non_zero(float p_deriv, float p_loc, float x, float value);
+float spline_compute(
+    float x_loc,
+    float x_deriv,
+    float x_val,
+    float y_loc,
+    float y_deriv,
+    float y_val,
+    float coord
+);
+double wrap(double val);
+double generate_improved_noise(
+    int level_index,
+    double x,
+    double y,
+    double z,
+    double val1,
+    double val2
+);
+double generate_perlin_noise(PerlinNoise noise, double x, double y, double z);
+double generate_normal_noise(int noise_index, double x, double y, double z);
+
+double get_arg(int pc, int arg_num) {
+    int arg_index = int(frames[pc].arg_indexes[arg_num]);
+    return arg_index < 0 ? const_args[~arg_index] : regs[arg_index + (gl_LocalInvocationIndex * REGISTERS)];
+}
+
+double get_const(int pc, int const_num) {
+    return const_args[int(frames[pc].const_index) + const_num];
+}
 
 void main() {
     uint index = gl_GlobalInvocationID.x;
-    buf_out.data[index] = const_args.data[index];
+    uint local_index = gl_LocalInvocationIndex;
+    int x = coords.x + int(index % 16u);
+    int y = coords.y + int(index / 256u);
+    int z = coords.z + int((index / 16u) % 16u);
+    if (int(index % 16u) % 4 != 0 || int(index / 256u) % 8 != 0 || int((index / 16u) % 16u) % 4 != 0) {
+        buf_out[index] = -0.1;
+        return;
+    }
+    for (int pc = frames.length() - 1; pc > 0; pc--) {
+        int result_index = int(frames[pc].result_index + (local_index * REGISTERS));
+        switch (int(frames[pc].op_type)) {
+            case OP_ADD:
+                regs[result_index] = get_arg(pc, 0) + get_arg(pc, 1);
+                break;
+            case OP_MUL:
+                regs[result_index] = get_arg(pc, 0) * get_arg(pc, 1);
+                break;
+            case OP_MIN: {
+                double arg1 = get_arg(pc, 0);
+                double arg2 = get_arg(pc, 1);
+                regs[result_index] = arg1 < arg2 ? arg1 : arg2;
+                break;
+            }
+            case OP_MAX: {
+                double arg1 = get_arg(pc, 0);
+                double arg2 = get_arg(pc, 1);
+                regs[result_index] = arg1 > arg2 ? arg1 : arg2;
+                break;
+            }
+            case OP_ABS:
+                regs[result_index] = abs(get_arg(pc, 0));
+                break;
+            case OP_SQUARE: {
+                double arg = get_arg(pc, 0);
+                regs[result_index] = arg * arg;
+                break;
+            }
+            case OP_CUBE: {
+                double arg = get_arg(pc, 0);
+                regs[result_index] = arg * arg * arg;
+                break;
+            }
+            case OP_HALF_NEGATIVE: {
+                double arg = get_arg(pc, 0);
+                regs[result_index] = arg < 0.0 ? arg * 0.5 : arg;
+                break;
+            }
+            case OP_QUARTER_NEGATIVE: {
+                double arg = get_arg(pc, 0);
+                regs[result_index] = arg < 0.0 ? arg * 0.25 : arg;
+                break;
+            }
+            case OP_INVERT:
+                regs[result_index] = 1.0 / get_arg(pc, 0);
+                break;
+            case OP_SQUEEZE: {
+                double clamped_val = min(max(get_arg(pc, 0), -1.0), 1.0);
+                regs[result_index] = (clamped_val * 0.5) - (clamped_val * clamped_val * clamped_val * 0.04166666666666667);
+                break;
+            }
+            case OP_CLAMP: {
+                double minimum = get_const(pc, 0);
+                double maximum = get_const(pc, 1);
+                regs[result_index] = min(max(get_arg(pc, 0), minimum), maximum);
+                break;
+            }
+            case OP_Y_CLAMPED_GRAD: {
+                double from_y = get_const(pc, 0);
+                double to_y = get_const(pc, 1);
+                double from_value = get_const(pc, 2);
+                double to_value = get_const(pc, 3);
+                regs[result_index] = clamped_map(double(y), from_y, to_y, from_value, to_value);
+                break;
+            }
+            case OP_FIND_TOP_SURFACE: {
+                int const_index = int(frames[pc].const_index);
+                if (const_index < 0) {
+                    // Find Top Surface Early Return Condition
+                    int main_pc_index = ~const_index;
+                    int cell_height = int(get_const(main_pc_index, 0));
+                    int lower_bound = int(get_const(main_pc_index, 1));
+                    int top_y = (int(floor(get_arg(main_pc_index, 0)) / cell_height)) * cell_height;
+                    if (top_y <= lower_bound) {
+                        regs[result_index] = lower_bound;
+                        pc = main_pc_index;
+                    } else {
+                        // Save current y and switch y context to top_y
+                        regs[result_index] = double(y);
+                        y = top_y;
+                    }
+                } else {
+                    // Find Top Surface Main
+                    int cell_height = int(get_const(pc, 0));
+                    int lower_bound = int(get_const(pc, 1));
+                    double density = get_arg(pc, 1);
+
+                    if (density > 0.0) {
+                        int block_y = y;
+                        // Switch y context back to old y
+                        y = int(regs[result_index]);
+                        regs[result_index] = block_y;
+                    } else if (y >= lower_bound) {
+                        if (int(frames[pc].arg_indexes[1]) < 0) {
+                            regs[result_index + 1] = density;
+                            pc++;
+                        } else {
+                            pc = int(frames[pc].arg_indexes[2]);
+                        }
+                        y -= cell_height;
+                    } else {
+                        // Switch y context back to old y
+                        y = int(regs[result_index]);
+                        regs[result_index] = lower_bound;
+                    }
+                }
+                break;
+            }
+            case OP_RANGE_CHOICE: {
+                int const_index = int(frames[pc].const_index);
+                if (const_index < 0) {
+                    pc = ~const_index;
+                    break;
+                }
+                double input_arg = get_arg(pc, 0);
+                double min_incl = get_const(pc, 0);
+                double max_excl = get_const(pc, 1);
+                if (input_arg < max_excl && input_arg >= min_incl) {
+                    int in_range_index = int(frames[pc].arg_indexes[1]);
+                    if (in_range_index < 0) {
+                        regs[result_index] = get_arg(pc, 1);
+                        pc = int(get_const(pc, 2));
+                    }
+                } else {
+                    int out_of_range_index = int(frames[pc].arg_indexes[2]);
+                    if (out_of_range_index < 0) {
+                        regs[result_index] = get_arg(pc, 2);
+                        pc = int(get_const(pc, 2));
+                    } else {
+                        pc = out_of_range_index;
+                    }
+                }
+                break;
+            }
+            case OP_INTERVAL_SELECT: {
+                int const_index = int(frames[pc].const_index);
+                if (const_index < 0) {
+                    pc = ~const_index;
+                    break;
+                }
+                int num_thresholds = int(frames[pc].arg_indexes[1]);
+                double input_arg = get_arg(pc, 0);
+                // Find interval range
+                for (int i = 0; i <= num_thresholds; i++) {
+                    if (i == num_thresholds || input_arg < get_const(pc, i)) {
+                        int threshold_index = int(get_const(pc, num_thresholds + i));
+                        if (threshold_index < 0) {
+                            regs[result_index] = const_args[~threshold_index];
+                            pc = int(frames[pc].arg_indexes[2]);
+                        } else {
+                            pc = threshold_index;
+                        }
+                        break;
+                    }
+                }
+                break;
+            }
+            case OP_NOISE: {
+                double xz_scale = get_const(pc, 1);
+                double y_scale = get_const(pc, 2);
+                regs[result_index] = generate_normal_noise(
+                    int(get_const(pc, 0)),
+                    double(x) * xz_scale,
+                    double(y) * y_scale,
+                    double(z) * xz_scale
+                );
+                break;
+            }
+            case OP_SHIFTED_NOISE: {
+                double xz_scale = get_const(pc, 1);
+                double y_scale = get_const(pc, 2);
+                double shifted_x = (double(x) * xz_scale) + get_arg(pc, 0);
+                double shifted_y = (double(y) * y_scale) + get_arg(pc, 1);
+                double shifted_z = (double(z) * xz_scale) + get_arg(pc, 2);
+                regs[result_index] = generate_normal_noise(
+                    int(get_const(pc, 0)),
+                    shifted_x,
+                    shifted_y,
+                    shifted_z
+                );
+                break;
+            }
+            case OP_SPLINE: {
+                int const_index = int(frames[pc].const_index);
+                // If const_index is non negative, treat as main spline, else treat as spline point
+                if (const_index >= 0) {
+                    float coord = float(get_arg(pc, 0));
+                    int num_points = frames[pc].arg_indexes[2];
+                    int len = num_points;
+                    // Search for point
+                    int point_index = 0;
+                    while (len > 0) {
+                        int half_len = len / 2;
+                        int mid = point_index + half_len;
+                        if (coord < float(get_const(pc, mid * 3))) {
+                            len = half_len;
+                        } else {
+                            point_index = mid + 1;
+                            len -= half_len + 1;
+                        }
+                    }
+                    point_index -= 1;
+
+                    if (point_index < 0 || point_index == num_points - 1) {
+                        // If first point or last point (single point)
+                        point_index = point_index < 0 ? 0 : point_index * 3;
+                        int point_pc = int(get_const(pc, point_index + 2));
+                        // If first/last point is constant (negative), save result in register and go to return frame,
+                        // else go to point value start frame
+                        if (point_pc < 0) {
+                            float point_loc = float(get_const(pc, point_index));
+                            float point_deriv = float(get_const(pc, point_index + 1));
+                            float point_value = float(const_args[~point_pc]);
+                            regs[result_index] = double(linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value));
+                            pc = frames[pc].arg_indexes[1];
+                        } else {
+                            regs[result_index + 1] = 0.0; // Single point indicator
+                            pc = point_pc;
+                        }
+                    } else {
+                        // If between points, interpolate (double point)
+                        point_index *= 3;
+                        int point1_pc = int(get_const(pc, point_index + 2));
+                        int point2_pc = int(get_const(pc, point_index + 5));
+                        // If both points are constants (negative), compute spline and go to return frame,
+                        if (point2_pc < 0 && point1_pc < 0) {
+                            float point1_loc = float(get_const(pc, point_index));
+                            float point1_deriv = float(get_const(pc, point_index + 1));
+                            float point1_value = float(const_args[~point1_pc]);
+                            float point2_loc = float(get_const(pc, point_index + 3));
+                            float point2_deriv = float(get_const(pc, point_index + 4));
+                            float point2_value = float(const_args[~point2_pc]);
+                            regs[result_index] = spline_compute(
+                                point1_loc,
+                                point1_deriv,
+                                point1_value,
+                                point2_loc,
+                                point2_deriv,
+                                point2_value,
+                                coord
+                            );
+                            pc = frames[pc].arg_indexes[1];
+                        } else if (point2_pc < 0) {
+                            regs[result_index + 1] = 1.0; // First point eval indicator
+                            pc = point1_pc;
+                        } else if (point1_pc < 0) {
+                            regs[result_index + 1] = 2.0; // Second point eval indicator
+                            pc = point2_pc;
+                        } else {
+                            regs[result_index + 1] = 4.0; // Double point eval indicator
+                            pc = point2_pc;
+                        }
+                    }
+                } else {
+                    int main_spline_reg_index = int(frames[pc].result_index + (local_index * REGISTERS));
+                    int main_spline_pc = int(frames[pc].arg_indexes[0]);
+                    int point_indicator = int(regs[main_spline_reg_index + 1]);
+                    if (point_indicator == 0) {
+                        // Single point eval case
+                        int point_index = int(frames[pc].arg_indexes[1]) * 3;
+                        float coord = float(get_arg(main_spline_pc, 0));
+                        float point_loc = float(get_const(main_spline_pc, point_index));
+                        float point_deriv = float(get_const(main_spline_pc, point_index + 1));
+                        float point_value = float(regs[main_spline_reg_index + 3]);
+                        regs[result_index] = linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value);
+                        pc = ~const_index;
+                    } else if (point_indicator >= 1 && point_indicator <= 3) {
+                        // First point eval, second point eval, and double point phase 2 eval
+                        int point_index = point_indicator == 2
+                            ? int(frames[pc].arg_indexes[1] - 1) * 3
+                            : int(frames[pc].arg_indexes[1]) * 3;
+                        float coord = float(get_arg(main_spline_pc, 0));
+                        float point1_loc = float(get_const(main_spline_pc, point_index));
+                        float point1_deriv = float(get_const(main_spline_pc, point_index + 1));
+                        float point1_value = float(point_indicator != 2
+                            ? regs[main_spline_reg_index + 3] // First point eval
+                            : const_args[~int(get_const(main_spline_pc, point_index + 2))]); // Second point eval
+                        float point2_loc = float(get_const(main_spline_pc, point_index + 3));
+                        float point2_deriv = float(get_const(main_spline_pc, point_index + 4));
+                        float point2_value = float(point_indicator == 1
+                            ? const_args[~int(get_const(main_spline_pc, point_index + 5))] // First point eval
+                            : point_indicator == 2
+                            ? regs[main_spline_reg_index + 3] // Second point eval
+                            : regs[main_spline_reg_index + 2]); // Double point eval
+                        regs[result_index] = spline_compute(
+                            point1_loc,
+                            point1_deriv,
+                            point1_value,
+                            point2_loc,
+                            point2_deriv,
+                            point2_value,
+                            coord
+                        );
+                        pc = ~const_index;
+                    } else if (point_indicator == 4) {
+                        // Double point eval case
+                        regs[main_spline_reg_index + 1]--; // Switch to double point phase 2 indicator
+                        // Move point 2 value to prevent it from being overwritten
+                        regs[main_spline_reg_index + 2] = regs[main_spline_reg_index + 3];
+                    }
+                }
+                break;
+            }
+            case OP_BLEND_DENSITY:
+            case OP_CACHE_ALL_IN_CELL:
+            case OP_INTERPOLATED:
+            case OP_CACHE_ONCE:
+            case OP_FLAT_CACHE:
+            case OP_CACHE_2D:
+                regs[result_index] = get_arg(pc, 0);
+                break;
+            case OP_BLEND_OFFSET:
+                regs[result_index] = 0.0;
+                break;
+            case OP_BLEND_ALPHA:
+            case OP_END_ISLANDS:
+                regs[result_index] = 1.0;
+                break;
+            case OP_SHIFT_A:
+                regs[result_index] = 4.0 * generate_normal_noise(
+                    int(get_const(pc, 0)),
+                    double(x) * 0.25,
+                    0.0,
+                    double(z) * 0.25
+                );
+                break;
+            case OP_SHIFT_B:
+                regs[result_index] = 4.0 * generate_normal_noise(
+                    int(get_const(pc, 0)),
+                    double(z) * 0.25,
+                    double(x) * 0.25,
+                    0.0
+                );
+                break;
+            case OP_OLD_BLENDED_NOISE: {
+                double smear_scale_mult = get_const(pc, 0);
+                double xz_factor = get_const(pc, 1);
+                double xz_scale = get_const(pc, 2) * 684.412;
+                double y_factor = get_const(pc, 3);
+                double y_scale = get_const(pc, 4) * 684.412;
+                double block_x_mul = double(x) * xz_scale;
+                double block_y_mul = double(y) * y_scale;
+                double block_z_mul = double(z) * xz_scale;
+                double block_x_fact = block_x_mul / xz_factor;
+                double block_y_fact = block_y_mul / y_factor;
+                double block_z_fact = block_z_mul / xz_factor;
+                double y_smear = y_scale * smear_scale_mult;
+                double y_smear_factor = y_smear / y_factor;
+
+                double noise_acc = 0.0;
+                double acc = 1.0;
+                int noise_index = int(noise_states[0].noises[1].levels_index)
+                    + int(noise_states[0].noises[1].levels_count);
+                for (int i = 0; i < 8; i++) {
+                    int level_index = noise_index - i - 1;
+                    noise_acc += generate_improved_noise(
+                        level_index,
+                        wrap(block_x_fact * acc),
+                        wrap(block_y_fact * acc),
+                        wrap(block_z_fact * acc),
+                        y_smear_factor * acc,
+                        block_y_fact * acc
+                    ) / acc;
+                    acc *= 0.5;
+                }
+
+                double noise_result = (1.0 + (noise_acc * 0.1)) * 0.5;
+                double min_noise_acc = 0.0;
+                double max_noise_acc = 0.0;
+                acc = 1.0;
+                noise_index = int(noise_states[0].noises[0].levels_index)
+                    + int(noise_states[0].noises[0].levels_count);
+                for (int i = 0; i < 16; i++) {
+                    double block_x_wrap = wrap(block_x_mul * acc);
+                    double block_y_wrap = wrap(block_y_mul * acc);
+                    double block_z_wrap = wrap(block_z_mul * acc);
+                    double y_smear_adj = y_smear * acc;
+                    double block_y_adj = block_y_mul * acc;
+                    int level_index = noise_index - i - 1;
+                    if (!(noise_result <= 0.0)) {
+                        max_noise_acc += generate_improved_noise(
+                            level_index,
+                            block_x_wrap,
+                            block_y_wrap,
+                            block_z_wrap,
+                            y_smear_adj,
+                            block_y_adj
+                        ) / acc;
+                    }
+                    if (!(noise_result >= 1.0)) {
+                        min_noise_acc += generate_improved_noise(
+                            level_index + 16, // Assumes min/max perlin noise has 16 levels
+                            block_x_wrap,
+                            block_y_wrap,
+                            block_z_wrap,
+                            y_smear_adj,
+                            block_y_adj
+                        ) / acc;
+                    }
+                    acc *= 0.5;
+                }
+                double final_result;
+                if (noise_result < 0.0) {
+                    final_result = min_noise_acc / double(1 << 16);
+                } else if (noise_result > 1.0) {
+                    final_result = max_noise_acc / double(1 << 16);
+                } else {
+                    final_result = lerp(noise_result, min_noise_acc / 512.0, max_noise_acc / 512.0) / 128.0;
+                }
+                regs[result_index] = final_result;
+                break;
+            }
+            default:
+                break;
+        }
+    }
+    buf_out[index] = regs[local_index * REGISTERS];
 }
 
+double lerp(double pos, double x0, double x1) {
+    return x0 + (pos * (x1 - x0));
+}
+
+double lerp2(
+    double pos1,
+    double pos2,
+    double x0,
+    double x1,
+    double y0,
+    double y1
+) {
+    return lerp(pos2, lerp(pos1, x0, x1), lerp(pos1, y0, y1));
+}
+
+double lerp3(
+    double pos1,
+    double pos2,
+    double pos3,
+    double x00,
+    double x10,
+    double y00,
+    double y10,
+    double x01,
+    double x11,
+    double y01,
+    double y11
+) {
+    return lerp(pos3, lerp2(pos1, pos2, x00, x10, y00, y10), lerp2(pos1, pos2, x01, x11, y01, y11));
+}
+
+double inverse_lerp(double pos, double x, double y) {
+    return (pos - x) / (y - x);
+}
+
+double smoothstep(double val) {
+    return val * val * val * (val * (val * 6.0 - 15.0) + 10.0);
+}
+
+double clamped_map(
+    double pos1,
+    double x,
+    double y,
+    double val1,
+    double val2
+) {
+    double inv_lerp = inverse_lerp(pos1, x, y);
+    return inv_lerp < 0.0 ? val1 : inv_lerp > 1.0 ? val2 : lerp(inv_lerp, val1, val2);
+}
+
+float linear_ext_if_non_zero(float p_deriv, float p_loc, float x, float value) {
+    return p_deriv == 0.0 ? value : value + (p_deriv * (x - p_loc));
+}
+
+float spline_compute(
+    float x_loc,
+    float x_deriv,
+    float x_val,
+    float y_loc,
+    float y_deriv,
+    float y_val,
+    float coord
+) {
+    float loc_dist = y_loc - x_loc;
+    float pos = (coord - x_loc) / loc_dist;
+    float val_dist = y_val - x_val;
+    float val1 = x_deriv * loc_dist - val_dist;
+    float val2 = -y_deriv * loc_dist + val_dist;
+    return float(lerp(pos, x_val, y_val)) + (pos * (1.0 - pos)) * float(lerp(pos, val1, val2));
+}
+
+double wrap(double val) {
+    return val - floor((val / double(1 << 25)) + 0.5) * double(1 << 25);
+}
+
+struct Gradient {
+    int x, y, z;
+};
+
+const Gradient SIMPLEX_GRADIENT[16] = {
+    { 1,  1,  0},
+    {-1,  1,  0},
+    { 1, -1,  0},
+    {-1, -1,  0},
+    { 1,  0,  1},
+    {-1,  0,  1},
+    { 1,  0, -1},
+    {-1,  0, -1},
+    { 0,  1,  1},
+    { 0, -1,  1},
+    { 0,  1, -1},
+    { 0, -1, -1},
+    { 1,  1,  0},
+    { 0, -1,  1},
+    {-1,  1,  0},
+    { 0, -1, -1}
+};
+
+int get_level_value(int level_index, int value) {
+    return noise_levels[level_index].values[value];
+}
+
+double sample_plus_lerp(
+    int level_index,
+    int x,
+    int y,
+    int z,
+    double x_real,
+    double y_real,
+    double z_real,
+    double y_real_offset
+) {
+    int x0 = get_level_value(level_index, x);
+    int x1 = get_level_value(level_index, x + 1);
+    int xy00 = get_level_value(level_index, x0 + y);
+    int xy01 = get_level_value(level_index, x0 + y + 1);
+    int xy10 = get_level_value(level_index, x1 + y);
+    int xy11 = get_level_value(level_index, x1 + y + 1);
+
+    int xyz000 = get_level_value(level_index, xy00 + z) & 0xF;
+    int xyz100 = get_level_value(level_index, xy10 + z) & 0xF;
+    int xyz010 = get_level_value(level_index, xy01 + z) & 0xF;
+    int xyz110 = get_level_value(level_index, xy11 + z) & 0xF;
+    int xyz001 = get_level_value(level_index, xy00 + z + 1) & 0xF;
+    int xyz101 = get_level_value(level_index, xy10 + z + 1) & 0xF;
+    int xyz011 = get_level_value(level_index, xy01 + z + 1) & 0xF;
+    int xyz111 = get_level_value(level_index, xy11 + z + 1) & 0xF;
+
+    double x_real1 = x_real - 1.0;
+    double y_real1 = y_real_offset - 1.0;
+    double z_real1 = z_real - 1.0;
+    Gradient s000 = SIMPLEX_GRADIENT[xyz000];
+    double d000 = s000.x * x_real
+                + s000.y * y_real_offset
+                + s000.z * z_real;
+    Gradient s100 = SIMPLEX_GRADIENT[xyz100];
+    double d100 = s100.x * x_real1
+                + s100.y * y_real_offset
+                + s100.z * z_real;
+    Gradient s010 = SIMPLEX_GRADIENT[xyz010];
+    double d010 = s010.x * x_real
+                + s010.y * y_real1
+                + s010.z * z_real;
+    Gradient s110 = SIMPLEX_GRADIENT[xyz110];
+    double d110 = s110.x * x_real1
+                + s110.y * y_real1
+                + s110.z * z_real;
+    Gradient s001 = SIMPLEX_GRADIENT[xyz001];
+    double d001 = s001.x * x_real
+                + s001.y * y_real_offset
+                + s001.z * z_real1;
+    Gradient s101 = SIMPLEX_GRADIENT[xyz101];
+    double d101 = s101.x * x_real1
+                + s101.y * y_real_offset
+                + s101.z * z_real1;
+    Gradient s011 = SIMPLEX_GRADIENT[xyz011];
+    double d011 = s011.x * x_real
+                + s011.y * y_real1
+                + s011.z * z_real1;
+    Gradient s111 = SIMPLEX_GRADIENT[xyz111];
+    double d111 = s111.x * x_real1
+                + s111.y * y_real1
+                + s111.z * z_real1;
+
+    return lerp3(
+        smoothstep(x_real),
+        smoothstep(y_real),
+        smoothstep(z_real),
+        d000,
+        d100,
+        d010,
+        d110,
+        d001,
+        d101,
+        d011,
+        d111
+    );
+}
+
+double generate_improved_noise(
+    int level_index,
+    double x,
+    double y,
+    double z,
+    double val1,
+    double val2
+) {
+    x += noise_levels[level_index].x;
+    y += noise_levels[level_index].y;
+    z += noise_levels[level_index].z;
+    int x_floor = int(floor(x));
+    int y_floor = int(floor(y));
+    int z_floor = int(floor(z));
+    x -= x_floor;
+    y -= y_floor;
+    z -= z_floor;
+    double y_offset = y;
+    if (val1 != 0.0) {
+        double val = val2 >= 0.0 && val2 < y ? val2 : y;
+        y_offset -= val1 * floor((val / val1) + 1.0e-7F);
+    }
+    return sample_plus_lerp(
+        level_index,
+        x_floor & 0xFF,
+        y_floor & 0xFF,
+        z_floor & 0xFF,
+        x, y, z, y_offset
+    );
+}
+
+double generate_perlin_noise(PerlinNoise noise, double x, double y, double z) {
+    double value = 0.0;
+    double input_factor = noise.lowest_freq_input_factor;
+    double value_factor = noise.lowest_freq_value_factor;
+    int levels_count = int(noise.levels_count);
+    int noise_levels_index = int(noise.levels_index);
+    for (int i = 0; i < levels_count; i++) {
+        int level_index = noise_levels_index + i;
+        if (noise_levels[level_index].disabled == 0) {
+            value += noise_levels[level_index].amplitude
+                * generate_improved_noise(
+                    level_index,
+                    wrap(x * input_factor),
+                    wrap(y * input_factor),
+                    wrap(z * input_factor),
+                    0.0, 0.0
+                ) * value_factor;
+        }
+        input_factor *= 2.0;
+        value_factor *= 0.5;
+    }
+    return value;
+}
+
+double generate_normal_noise(int noise_index, double x, double y, double z) {
+    return (
+        generate_perlin_noise(noise_states[noise_index].noises[0], x, y, z)
+        + generate_perlin_noise(
+            noise_states[noise_index].noises[1],
+            x * 1.0181268882175227,
+            y * 1.0181268882175227,
+            z * 1.0181268882175227
+        )
+    ) * noise_states[noise_index].value_factor;
+}

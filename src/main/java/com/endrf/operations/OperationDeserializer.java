@@ -5,7 +5,6 @@ import java.lang.reflect.Type;
 import java.util.HashSet;
 
 public class OperationDeserializer implements JsonDeserializer<OperationArg> {
-    static HashSet<String> noiseTypes = new HashSet<>();
 
     @Override
     public OperationArg deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context) {

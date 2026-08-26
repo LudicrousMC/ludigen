@@ -1,13 +1,13 @@
 package com.endrf.mixin;
 
 import com.endrf.LudiGen;
-import com.google.common.collect.Sets;
+import com.endrf.NoiseChunkAccess;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
 import net.minecraft.util.Mth;
 import net.minecraft.util.Util;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.StructureManager;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.LevelChunkSection;
@@ -20,8 +20,10 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.DoubleBuffer;
 import java.util.ArrayList;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
@@ -73,11 +75,12 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             }
 
             ChunkPos pos = centerChunk.getPos();
+            NoiseChunk noiseChunk = centerChunk.getOrCreateNoiseChunk(chunk -> this.createNoiseChunk(centerChunk, structureManager, blender, randomState));
             Aquifer aquifer;
             if (!this.settings.value().isAquifersEnabled()) {
                 aquifer = Aquifer.createDisabled(this.globalFluidPicker.get());
             } else {
-                NoiseChunk noiseChunk = centerChunk.getOrCreateNoiseChunk(chunk -> this.createNoiseChunk(centerChunk, structureManager, blender, randomState));
+
                 aquifer = Aquifer.create(noiseChunk, pos, this.settings.value().noiseRouter(), randomState.aquiferRandom(), noiseSettings.minY(), noiseSettings.height(), globalFluidPicker.get());
             }
             NoiseChunk.BlockStateFiller veinifier = null;
@@ -85,12 +88,14 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 veinifier = OreVeinifier.create(this.settings.value().noiseRouter().veinToggle(), this.settings.value().noiseRouter().veinRidged(), this.settings.value().noiseRouter().veinGap(), randomState.oreRandom());
             }
 
-            double[] densities = LudiGen.instance.fillNoise(minY, noiseSettings.height(), noiseSettings.getCellWidth(), noiseSettings.getCellHeight(), pos.getMinBlockX(), pos.getMinBlockZ());
+            double[] densities = new double[noiseSettings.height() * 16 * 16];
+            LudiGen.instance.fillNoiseAccel(minY, noiseSettings.height(), noiseSettings.getCellWidth(), noiseSettings.getCellHeight(), pos.getMinBlockX(), pos.getMinBlockZ(), densities);
             Heightmap oceanFloor = centerChunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
             Heightmap worldSurface = centerChunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
+            BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
 
-            int yInChunk = noiseSettings.height() + minY;
-            int yIndex = noiseSettings.height();
+            int yInChunk = noiseSettings.height() + minY - 1;
+            int yIndex = noiseSettings.height() - 1;
             for (LevelChunkSection section : sections) {
                 for (int yInSection = 15; yInSection >= 0; yInSection--, yInChunk--, yIndex--) {
                     for (int zInChunk = 0; zInChunk < 16; zInChunk++) {
@@ -124,11 +129,19 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                             if (state == null) {
                                 state = this.settings.value().defaultBlock();
                             }
+                            /*BlockState state = AIR;
+                            if (density > 0) {
+                                state = this.settings.value().defaultBlock();
+                            }*/
 
                             if (state != AIR) {
                                 section.setBlockState(xInChunk, yInSection, zInChunk, state, false);
                                 oceanFloor.update(xInChunk, yInChunk, zInChunk, state);
                                 worldSurface.update(xInChunk, yInChunk, zInChunk, state);
+                                if (aquifer.shouldScheduleFluidUpdate() && !state.getFluidState().isEmpty()) {
+                                    blockPos.set(xInChunk, yInChunk, zInChunk);
+                                    centerChunk.markPosForPostProcessing(blockPos);
+                                }
                             }
                         }
                     }

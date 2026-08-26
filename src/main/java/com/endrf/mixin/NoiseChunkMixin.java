@@ -1,21 +1,18 @@
 package com.endrf.mixin;
 
 import com.endrf.LudiGen;
+import com.endrf.NoiseChunkAccess;
 import com.google.common.collect.Lists;
 import net.minecraft.core.QuartPos;
 import net.minecraft.core.SectionPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.ChunkPos;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.*;
 import net.minecraft.world.level.levelgen.blending.Blender;
 import net.minecraft.world.level.levelgen.material.MaterialRuleList;
 import org.jetbrains.annotations.Nullable;
-import org.spongepowered.asm.mixin.Final;
-import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Mutable;
-import org.spongepowered.asm.mixin.Shadow;
+import org.spongepowered.asm.mixin.*;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -24,7 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @Mixin(NoiseChunk.class)
-public abstract class NoiseChunkMixin {
+public abstract class NoiseChunkMixin implements NoiseChunkAccess {
     @Mutable
     @Final
     @Shadow
@@ -128,6 +125,16 @@ public abstract class NoiseChunkMixin {
     @Shadow
     private NoiseChunk.BlockStateFiller blockStateRule;
 
+    @Shadow
+    private boolean interpolating;
+    @Unique
+    private double[] ludigen$densities;
+
+    @Override
+    public void ludigen$setDensities(double[] densities) {
+        this.ludigen$densities = densities;
+    }
+
     @Inject(method = "<init>", at = @At("TAIL"))
     void NoiseChunk(int cellCountXZ, RandomState randomState, int chunkMinBlockX, int chunkMinBlockZ, NoiseSettings noiseSettings, DensityFunctions.BeardifierOrMarker beardifier, NoiseGeneratorSettings settings, Aquifer.FluidPicker globalFluidPicker, Blender blender, CallbackInfo ci) {
         this.cellWidth = noiseSettings.getCellWidth();
@@ -201,4 +208,5 @@ public abstract class NoiseChunkMixin {
 
         this.blockStateRule = new MaterialRuleList((NoiseChunk.BlockStateFiller[])builder.toArray(new NoiseChunk.BlockStateFiller[0]));
     }
+
 }

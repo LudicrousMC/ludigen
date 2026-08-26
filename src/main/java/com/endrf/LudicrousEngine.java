@@ -47,4 +47,6 @@ public class LudicrousEngine {
     native double evalDensityFunction(long instance, int x, int y, int z);
 
     native double[] fillNoise(long instance, int minY, int height, int cellWidth, int cellHeight, int x, int z);
+
+    native void fillNoiseAccel(long instance, int minY, int height, int cellWidth, int cellHeight, int x, int z, double[] densities);
 }

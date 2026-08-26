@@ -1,5 +1,7 @@
 package com.endrf.operations;
 
+import java.util.Objects;
+
 public class Clamp implements OperationArg {
     public final static String TYPE = "minecraft:clamp";
     private final String type = TYPE;
@@ -12,5 +14,10 @@ public class Clamp implements OperationArg {
         this.input = input;
         this.min = min;
         this.max = max;
+    }
+
+    @Override
+    public int getHash() {
+        return Objects.hash(this.type, this.min, this.max, this.input.getHash());
     }
 }
