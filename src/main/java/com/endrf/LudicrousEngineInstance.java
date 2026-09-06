@@ -44,7 +44,11 @@ public class LudicrousEngineInstance {
         return engine.fillNoise(this.ptr, minY, height, cellWidth, cellHeight, x, z);
     }
 
-    public void fillNoiseAccel(int minY, int height, int cellWidth, int cellHeight, int x, int z, double[] densities) {
-        engine.fillNoiseAccel(this.ptr, minY, height, cellWidth, cellHeight, x, z, densities);
+    public ByteBuffer fillNoiseAccel(int minY, int height, int cellWidth, int cellHeight, int x, int z) {
+        return engine.fillNoiseAccel(this.ptr, minY, height, cellWidth, cellHeight, x, z);
+    }
+
+    public void releaseDensities() {
+        engine.releaseDensities(this.ptr);
     }
 }

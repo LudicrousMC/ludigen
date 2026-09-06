@@ -5,7 +5,6 @@
   "mixins": [
     "ChunkPyramidMixin",
     "NoiseBasedChunkGeneratorMixin",
-    "NoiseChunkMixin",
     "ExampleMixin",
     "NormalNoiseAccessor",
     "PerlinNoiseAccessor",

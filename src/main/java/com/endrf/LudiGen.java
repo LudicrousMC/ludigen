@@ -23,7 +23,10 @@ public class LudiGen implements ModInitializer {
 
     public static AtomicReference<Long> seed = new AtomicReference<>();
     public static HashMap<String, Integer> dimensions = new HashMap<>();
-    public static LudicrousEngineInstance instance = LudicrousEngine.createInstance();
+    public static LudicrousEngineInstance instance;
+
+    public static int testCounter = -1;
+    public static long testStart = 0;
 
 	@Override
 	public void onInitialize() {
@@ -64,7 +67,6 @@ public class LudiGen implements ModInitializer {
 	}
 
     public void startInstance() {
-        NoiseStates.addOldBlendedNoise();
         JsonManager json;
         try {
             json = new JsonManager(Main.class);
@@ -73,11 +75,12 @@ public class LudiGen implements ModInitializer {
         }
         instance = LudicrousEngine.createInstance();
         instance.setDensityFunction(json.worldTypes.get("overworld").jsonDensityFunctions.get("final_density"));
-        instance.setNoiseStates(NoiseStates.noiseStates, NoiseStates.noiseLevelStates);
+        NoiseStates.NoiseStatesHolder noiseStatesData = NoiseStates.generateNoiseStates("overworld:final_density");
+        instance.setNoiseStates(noiseStatesData.noiseStates, noiseStatesData.noiseLevels);
         long start = System.nanoTime();
-        //double densityTest = instance.evalDensityFunction(-5, 112, 60);
+        double densityTest = instance.evalDensityFunction(-5, 112, 60);
         //double densityTest = instance.evalDensityFunction(368, 105, 461);
-        double densityTest = instance.evalDensityFunction(-228, 82, 82);
+        //double densityTest = instance.evalDensityFunction(-228, 82, 82);
         long end = System.nanoTime();
         System.out.println("density test: " + densityTest + " (-0.07504367162405336)");
         System.out.println("time: " + (end - start));
@@ -86,6 +89,21 @@ public class LudiGen implements ModInitializer {
             instance.registerShader("eval");
         } catch (IOException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    public static void inc() {
+        if (testCounter == -2)
+            return;
+        if (testCounter == -1) {
+            testStart = System.nanoTime();
+            testCounter = 0;
+        }
+        testCounter++;
+        if (testCounter == 4200) {
+            testCounter = -2;
+            long end = System.nanoTime();
+            System.out.println("total t: " + (end - testStart));
         }
     }
 }

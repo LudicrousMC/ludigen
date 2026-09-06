@@ -4,6 +4,7 @@ import com.endrf.mixin.BlendedNoiseAccessor;
 import com.endrf.mixin.ImprovedNoiseAccessor;
 import com.endrf.mixin.NormalNoiseAccessor;
 import com.endrf.mixin.PerlinNoiseAccessor;
+import it.unimi.dsi.fastutil.Pair;
 import it.unimi.dsi.fastutil.doubles.DoubleList;
 import net.minecraft.world.level.levelgen.DensityFunction;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
@@ -13,36 +14,53 @@ import net.minecraft.world.level.levelgen.synth.BlendedNoise;
 import net.minecraft.world.level.levelgen.synth.ImprovedNoise;
 import net.minecraft.world.level.levelgen.synth.NormalNoise;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public class NoiseStates {
-    public static HashMap<String, Integer> noiseStatesMap = new HashMap<>();
-    public static ArrayList<NormalNoiseState> noiseStates = new ArrayList<>();
-    public static ArrayList<ImprovedNoiseState> noiseLevelStates = new ArrayList<>();
+    public static HashMap<String, NormalNoiseData> noisesMap = new HashMap<>();
+    //public static ArrayList<NormalNoiseState> noiseStates = new ArrayList<>();
+    //public static ArrayList<ImprovedNoiseState> noiseLevelStates = new ArrayList<>();
+    // Maps density function -> noise state indexes in noiseStates
+    static HashMap<String, ArrayList<NormalNoiseData>> dfNoiseMap = new HashMap<>();
 
     // Returns position in levelNoiseStates
-    public static int registerNoiseState(PositionalRandomFactory rand, String path, Map<String, JsonManager.NoiseParameter> noiseParams) {
+    public static int registerNoiseState(PositionalRandomFactory rand, String path, Map<String, JsonManager.NoiseParameter> noiseParams, String identifier) {
         String randType = rand instanceof XoroshiroRandomSource.XoroshiroPositionalRandomFactory
                 ? "1"
                 : rand instanceof LegacyRandomSource.LegacyPositionalRandomFactory
                 ? "0" : "-1";
         String noiseStatePath = path + randType;
 
-        if (noiseStatesMap.containsKey(noiseStatePath)) {
-            return noiseStatesMap.get(noiseStatePath);
+        if (noisesMap.containsKey(noiseStatePath)) {
+            NormalNoiseData noise = noisesMap.get(noiseStatePath);
+            dfNoiseMap.computeIfAbsent(identifier, _ -> new ArrayList<>());
+            ArrayList<NormalNoiseData> dfNoiseList = dfNoiseMap.get(identifier);
+            int noiseIndex = dfNoiseList.indexOf(noise);
+            if (noiseIndex == -1) {
+                noiseIndex = dfNoiseList.size();
+                dfNoiseList.add(noise);
+            }
+            return noiseIndex;
         }
         JsonManager.NoiseParameter param = noiseParams.get(path);
-        //System.out.println("noise param " + noiseStatePath + " " + param.firstOctave);
         NormalNoise noise = NormalNoise.create(rand.fromHashOf(path), new NormalNoise.NoiseParameters(param.firstOctave, DoubleList.of(param.amplitudes)));
-        noiseStatesMap.put(noiseStatePath, noiseStates.size());
-        noiseStates.add(createNoiseState(noise, param));
-        return noiseStates.size() - 1;
+        NormalNoiseData noiseData = new NormalNoiseData(noise, param);
+        noisesMap.put(noiseStatePath, noiseData);
+        dfNoiseMap.computeIfAbsent(identifier, _ -> new ArrayList<>()).add(noiseData);
+        return dfNoiseMap.get(identifier).size() - 1;
     }
 
-    private static NormalNoiseState createNoiseState(NormalNoise noise, JsonManager.NoiseParameter params) {
+    public static NoiseStatesHolder generateNoiseStates(String dfIdentifier) {
+        ArrayList<NormalNoiseState> noiseStates = new ArrayList<>();
+        ArrayList<ImprovedNoiseState> noiseLevels = new ArrayList<>();
+        for (NormalNoiseData noiseData : dfNoiseMap.get(dfIdentifier)) {
+            noiseStates.add(createNoiseState(noiseData.noise, noiseData.params, noiseLevels));
+        }
+        addOldBlendedNoise(noiseStates, noiseLevels);
+        return new NoiseStatesHolder(noiseStates, noiseLevels);
+    }
+
+    private static NormalNoiseState createNoiseState(NormalNoise noise, JsonManager.NoiseParameter params, ArrayList<ImprovedNoiseState> noiseLevelStates) {
         NormalNoiseAccessor noiseAccessor = (NormalNoiseAccessor)noise;
         PerlinNoiseAccessor perlin1 = (PerlinNoiseAccessor)noiseAccessor.getFirst();
         ImprovedNoise[] perlin1Levels = perlin1.getNoiseLevels();
@@ -97,7 +115,7 @@ public class NoiseStates {
         );
     }
 
-    public static void addOldBlendedNoise() {
+    public static void addOldBlendedNoise(ArrayList<NormalNoiseState> noiseStates, ArrayList<ImprovedNoiseState> noiseLevelStates) {
         BlendedNoiseAccessor blendedNoise = (BlendedNoiseAccessor)BlendedNoise.createUnseeded(0.0, 0.0, 0.0, 0.0, 0.0);
         PerlinNoiseAccessor perlin1 = (PerlinNoiseAccessor)blendedNoise.getMaxLimitNoise();
         ImprovedNoise[] perlin1Levels = perlin1.getNoiseLevels();
@@ -214,6 +232,26 @@ public class NoiseStates {
 
         public static ImprovedNoiseState createDisabled() {
             return new ImprovedNoiseState(0, 0, 0, null, 0, true);
+        }
+    }
+
+    static class NormalNoiseData {
+        public NormalNoise noise;
+        public JsonManager.NoiseParameter params;
+
+        public NormalNoiseData(NormalNoise noise, JsonManager.NoiseParameter params) {
+            this.noise = noise;
+            this.params = params;
+        }
+    }
+
+    public static class NoiseStatesHolder {
+        public ArrayList<NormalNoiseState> noiseStates;
+        public ArrayList<ImprovedNoiseState> noiseLevels;
+
+        public NoiseStatesHolder(ArrayList<NormalNoiseState> noiseStates, ArrayList<ImprovedNoiseState> noiseLevels) {
+            this.noiseStates = noiseStates;
+            this.noiseLevels = noiseLevels;
         }
     }
 }

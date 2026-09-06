@@ -60,22 +60,22 @@ static EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
     switch (root->operationType)
     {
     case OP_CONST:
-        return (EvalStackAllocReqs){0,1};
+        return (EvalStackAllocReqs){0,1,0};
     case OP_Y_CLAMPED_GRAD:
-        return (EvalStackAllocReqs){1,4};
+        return (EvalStackAllocReqs){1,4,0};
     case OP_NOISE:
-        return (EvalStackAllocReqs){1,3};
+        return (EvalStackAllocReqs){1,3,0};
     case OP_SHIFT_A:
     case OP_SHIFT_B:
-        return (EvalStackAllocReqs){1,1};
+        return (EvalStackAllocReqs){1,1,0};
     case OP_OLD_BLENDED_NOISE:
-        return (EvalStackAllocReqs){1,5};
+        return (EvalStackAllocReqs){1,5,0};
     default:
         break;
     }
 
     // If this node is an actual operation, reserve 1 length in op_stack
-    EvalStackAllocReqs reqs = {1,0};
+    EvalStackAllocReqs reqs = {1,0,0};
     // Account for ops that have extra constants
     switch (root->operationType)
     {
@@ -85,7 +85,7 @@ static EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
     case OP_SPLINE:
         if (root->values[0] == OP_SUBTYPE_SPLINE_POINT) {
             if (root->allChildren[0]->operationType == OP_CONST)
-                return (EvalStackAllocReqs){0,4}; // Omit spline point op if it holds a constant value
+                return (EvalStackAllocReqs){0,4,0}; // Omit spline point op if it holds a constant value
             reqs.const_args_len += 3; // derivative, location, and stack index constants
         } else if (root->values[0] == OP_SUBTYPE_SPLINE) {
             reqs.op_stack_len++; // Extra return frame
@@ -108,6 +108,9 @@ static EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
         reqs.const_args_len += 3;
         break;
     case OP_INTERPOLATED:
+        reqs.op_stack_len++;
+        reqs.interp_pc_indexes_len++;
+        break;
     case OP_CACHE_ONCE:
     case OP_FLAT_CACHE:
     case OP_CACHE_2D:
@@ -122,6 +125,7 @@ static EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
             EvalStackAllocReqs childReqs = preorder_traversal_alloc_reqs(root->allChildren[i]);
             reqs.op_stack_len += childReqs.op_stack_len;
             reqs.const_args_len += childReqs.const_args_len;
+            reqs.interp_pc_indexes_len += childReqs.interp_pc_indexes_len;
         }
     }
 
@@ -161,13 +165,17 @@ EvalStack* generate_stack_wrapper(Node* node) {
     evalStack->op_stack[0] = (StackFrame){.op_type = OP_HALT};
     evalStack->op_stack_len = 1;
     evalStack->const_args = (double*)malloc(sizeof(double) * evalStackAlloc.const_args_len);
+    evalStack->interp_pc_indexes = (uint32_t*)malloc(sizeof(uint32_t) * evalStackAlloc.interp_pc_indexes_len);
     evalStack->const_args_len = 0;
     evalStack->max_reg = 0;
     evalStack->interp_len = 0;
+    evalStack->cache_once_len = 0;
+    evalStack->cache_flat_len = 0;
+    evalStack->cache_2d_len = 0;
 
     generate_stack_recursive(evalStack, node, 0);
-    printf("alloc reqs %d %d\n", evalStackAlloc.op_stack_len, evalStackAlloc.const_args_len);
-    printf("real reqs %d %d\n", evalStack->op_stack_len, evalStack->const_args_len);
+    printf("alloc reqs %d %d %d\n", evalStackAlloc.op_stack_len, evalStackAlloc.const_args_len, evalStackAlloc.interp_pc_indexes_len);
+    printf("real reqs %d %d %d\n", evalStack->op_stack_len, evalStack->const_args_len, evalStack->interp_len);
 
     return evalStack;
 }
@@ -345,8 +353,9 @@ static int interpolated_op_gen(EvalStack* evalStack, size_t currentFrameIndex, N
     // interp cache frame caches calculated values for sample and resets to Pre-interp
     // Pre-interp frame looks up cache for interpolation, sets up sample calculation if cache miss,
     // and calculates interpolated value if not sample coordinate
-    evalStack->op_stack[currentFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos + 3);
+    evalStack->op_stack[currentFrameIndex].arg_indexes[0] = generate_stack_recursive(evalStack, node->allChildren[0], regPos);
     evalStack->op_stack[currentFrameIndex].arg_indexes[1] = evalStack->interp_len;
+    evalStack->interp_pc_indexes[evalStack->interp_len] = evalStack->op_stack_len;
     evalStack->op_stack[evalStack->op_stack_len++] = (StackFrame){
         .op_type = OP_INTERPOLATED,
         .const_index = -(currentFrameIndex + 1), // Skip PC if sample is cached
@@ -1427,6 +1436,7 @@ double evaluate_stack(EvalStack* finalStack, int x, int y, int z, EvalCache* eva
         goto *dispatch_table[finalStack->op_stack[--pc].op_type];
     }
 
+    // TODO: Fix noise states to index last item for old blended noise
     op_old_blended_noise: {
         double smear_scale_mult = get_const(finalStack, pc, 0);
         double xz_factor = get_const(finalStack, pc, 1);

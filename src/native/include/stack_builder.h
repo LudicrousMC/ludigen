@@ -22,6 +22,7 @@ typedef struct EvalStack {
     size_t noise_states_len;
     ImprovedNoise* noise_levels;
     size_t noise_levels_len;
+    uint32_t* interp_pc_indexes;
     size_t interp_len;
     size_t cache_once_len;
     size_t cache_flat_len;
@@ -62,6 +63,7 @@ typedef struct EvalCache {
 typedef struct EvalStackAllocReqs {
     size_t op_stack_len;
     size_t const_args_len;
+    size_t interp_pc_indexes_len;
 } EvalStackAllocReqs;
 
 typedef enum { NODE_LEAF, NODE_OP } NodeType;

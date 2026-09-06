@@ -76,8 +76,8 @@ public class JsonManager {
             }
         }
         // Ensure noises for all density functions are generated
-        for (NoiseSettings s : worldTypes.values()) {
-            s.constructDensityFunctions(noiseParams);
+        for (Map.Entry<String, NoiseSettings> e : worldTypes.entrySet()) {
+            e.getValue().constructDensityFunctions(noiseParams, e.getKey());
         }
     }
 
@@ -107,19 +107,19 @@ public class JsonManager {
         public HashMap<String, OperationArg> noiseRouter;
         public HashMap<String, String> jsonDensityFunctions;
 
-        public void constructDensityFunctions(Map<String, NoiseParameter> noiseParams) {
+        public void constructDensityFunctions(Map<String, NoiseParameter> noiseParams, String world) {
             this.jsonDensityFunctions = new HashMap<>();
             PositionalRandomFactory rand = legacyRandomSource
                     ? WorldgenRandom.Algorithm.LEGACY.newInstance(LudiGen.seed.get()).forkPositional()
                     : WorldgenRandom.Algorithm.XOROSHIRO.newInstance(LudiGen.seed.get()).forkPositional();
             for (Map.Entry<String, OperationArg> e: this.noiseRouter.entrySet()) {
+                String dfIdentifier = world + ":" + e.getKey();
                 String json = new GsonBuilder()
-                        //.registerTypeAdapter(OperationArg.class, new ConstructionSerializer(rand, noiseParams))
                         .registerTypeAdapter(ExternalArg.class, new ExternalArgSerializer())
-                        .registerTypeAdapter(Noise.class, new NoiseSerializer(rand, noiseParams))
-                        .registerTypeAdapter(ShiftedNoise.class, new ShiftedNoiseSerializer(rand, noiseParams))
-                        .registerTypeAdapter(ShiftA.class, new ShiftASerializer(rand, noiseParams))
-                        .registerTypeAdapter(ShiftB.class, new ShiftBSerializer(rand, noiseParams))
+                        .registerTypeAdapter(Noise.class, new NoiseSerializer(rand, noiseParams, dfIdentifier))
+                        .registerTypeAdapter(ShiftedNoise.class, new ShiftedNoiseSerializer(rand, noiseParams, dfIdentifier))
+                        .registerTypeAdapter(ShiftA.class, new ShiftASerializer(rand, noiseParams, dfIdentifier))
+                        .registerTypeAdapter(ShiftB.class, new ShiftBSerializer(rand, noiseParams, dfIdentifier))
                         .registerTypeAdapter(CacheOnce.class, new CacheOnceSerializer())
                         .registerTypeAdapter(FlatCache.class, new FlatCacheSerializer())
                         .registerTypeAdapter(Cache2D.class, new Cache2DSerializer())

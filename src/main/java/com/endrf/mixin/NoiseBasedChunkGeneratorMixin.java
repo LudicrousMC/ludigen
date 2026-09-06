@@ -80,7 +80,6 @@ public abstract class NoiseBasedChunkGeneratorMixin {
             if (!this.settings.value().isAquifersEnabled()) {
                 aquifer = Aquifer.createDisabled(this.globalFluidPicker.get());
             } else {
-
                 aquifer = Aquifer.create(noiseChunk, pos, this.settings.value().noiseRouter(), randomState.aquiferRandom(), noiseSettings.minY(), noiseSettings.height(), globalFluidPicker.get());
             }
             NoiseChunk.BlockStateFiller veinifier = null;
@@ -88,39 +87,48 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                 veinifier = OreVeinifier.create(this.settings.value().noiseRouter().veinToggle(), this.settings.value().noiseRouter().veinRidged(), this.settings.value().noiseRouter().veinGap(), randomState.oreRandom());
             }
 
-            double[] densities = new double[noiseSettings.height() * 16 * 16];
-            LudiGen.instance.fillNoiseAccel(minY, noiseSettings.height(), noiseSettings.getCellWidth(), noiseSettings.getCellHeight(), pos.getMinBlockX(), pos.getMinBlockZ(), densities);
+            Beardifier beardifier = Beardifier.forStructuresInChunk(structureManager, pos);
+
+            //double[] densities = new double[noiseSettings.height() * 16 * 16];
+            ByteBuffer densities_buf = LudiGen.instance.fillNoiseAccel(minY, noiseSettings.height(), noiseSettings.getCellWidth(), noiseSettings.getCellHeight(), pos.getMinBlockX(), pos.getMinBlockZ());
+            densities_buf.order(ByteOrder.nativeOrder());
+            DoubleBuffer densities = densities_buf.asDoubleBuffer();
             Heightmap oceanFloor = centerChunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
             Heightmap worldSurface = centerChunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
             BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
 
             int yInChunk = noiseSettings.height() + minY - 1;
             int yIndex = noiseSettings.height() - 1;
+            var context = new DensityFunction.FunctionContext() {
+                int x;
+                int y;
+                int z;
+
+                @Override
+                public int blockX() {
+                    return pos.getMinBlockX() + x;
+                }
+
+                @Override
+                public int blockY() {
+                    return y;
+                }
+
+                @Override
+                public int blockZ() {
+                    return pos.getMinBlockZ() + z;
+                }
+            };
             for (LevelChunkSection section : sections) {
                 for (int yInSection = 15; yInSection >= 0; yInSection--, yInChunk--, yIndex--) {
                     for (int zInChunk = 0; zInChunk < 16; zInChunk++) {
                         for (int xInChunk = 0; xInChunk < 16; xInChunk++) {
-                            int finalXInChunk = xInChunk;
-                            int finalYInChunk = yInChunk;
-                            int finalZInChunk = zInChunk;
-                            DensityFunction.FunctionContext context = new DensityFunction.FunctionContext() {
-                                @Override
-                                public int blockX() {
-                                    return pos.getMinBlockX() + finalXInChunk;
-                                }
-
-                                @Override
-                                public int blockY() {
-                                    return finalYInChunk;
-                                }
-
-                                @Override
-                                public int blockZ() {
-                                    return pos.getMinBlockZ() + finalZInChunk;
-                                }
-                            };
+                            context.x = xInChunk;
+                            context.y = yInChunk;
+                            context.z = zInChunk;
                             //double density = LudiGen.instance.evalDensityFunction(pos.getMinBlockX() + xInChunk, yInChunk, pos.getMinBlockZ() + zInChunk);
-                            double density = densities[(yIndex * 256) + (zInChunk * 16) + xInChunk];
+                            double density = densities.get((yIndex * 256) + (zInChunk * 16) + xInChunk)
+                                    + beardifier.compute(context);
                             BlockState state = aquifer.computeSubstance(context, density);
                             if (state == null && veinifier != null) {
                                 state = veinifier.calculate(context);
@@ -147,6 +155,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                     }
                 }
             }
+            LudiGen.instance.releaseDensities();
 
             for (LevelChunkSection s : sections) {
                 s.release();
