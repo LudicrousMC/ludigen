@@ -25,26 +25,6 @@ public class ConstructionSerializer implements JsonSerializer<OperationArg> {
             return context.serialize(JsonManager.densityFunctions.get(((ExternalArg) src).path));
         }
 
-        /*switch ((Object)src) {
-            case Noise n -> {
-                String noise = n.getNoisePath();
-                NoiseStates.registerNoiseState(rand, noise, noiseParams);
-            }
-            case ShiftedNoise n -> {
-                String noise = n.getNoisePath();
-                System.out.println(noise);
-                NoiseStates.registerNoiseState(rand, noise, noiseParams);
-            }
-            case ShiftA n -> {
-                String noise = n.getNoisePath();
-                NoiseStates.registerNoiseState(rand, noise, noiseParams);
-            }
-            case ShiftB n -> {
-                String noise = n.getNoisePath();
-                NoiseStates.registerNoiseState(rand, noise, noiseParams);
-            }
-            default -> {}
-        }*/
         JsonElement prim = OperationSerializer.serializePrimitives(src, context);
         return prim != null ? prim : context.serialize(src);
     }

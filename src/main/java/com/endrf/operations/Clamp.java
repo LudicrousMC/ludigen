@@ -4,11 +4,11 @@ import java.util.Objects;
 
 public class Clamp implements OperationArg {
     public final static String TYPE = "minecraft:clamp";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final OperationArg input;
-    private final double min;
-    private final double max;
+    private OperationArg input;
+    private double min;
+    private double max;
 
     public Clamp(OperationArg input, double min, double max) {
         this.input = input;

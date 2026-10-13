@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class Abs implements OperationArg {
     public final static String TYPE = "minecraft:abs";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final OperationArg argument;
+    private OperationArg argument;
 
     public Abs(OperationArg argument) {
         this.argument = argument;

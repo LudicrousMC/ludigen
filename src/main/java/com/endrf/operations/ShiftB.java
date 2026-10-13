@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class ShiftB implements OperationArg {
     public final static String TYPE = "minecraft:shift_b";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final String argument;
+    private String argument;
 
     public ShiftB(String argument) {
         this.argument = argument;

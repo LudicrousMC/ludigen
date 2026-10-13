@@ -1,0 +1,17 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "linux-x86_64",
+      "displayName": "Linux (x86_64)",
+      "binaryDir": "${sourceDir}/build/linux-x86_64",
+      "toolchainFile": "${sourceDir}/targets/linux-x86_64.cmake"
+    },
+    {
+      "name": "windows-x86_64",
+      "displayName": "Windows (x86_64)",
+      "binaryDir": "${sourceDir}/build/windows-x86_64",
+      "toolchainFile": "${sourceDir}/targets/windows-x86_64.cmake"
+    }
+  ]
+}

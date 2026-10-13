@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class CacheOnce implements OperationArg {
     public final static String TYPE = "minecraft:cache_once";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    public final OperationArg argument;
+    public OperationArg argument;
 
     public CacheOnce(OperationArg argument) {
         this.argument = argument;

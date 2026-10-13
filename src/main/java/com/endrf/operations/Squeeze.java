@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class Squeeze implements OperationArg {
     public final static String TYPE = "minecraft:squeeze";
-    public final String type = TYPE;
+    public String type = TYPE;
 
-    private final OperationArg argument;
+    private OperationArg argument;
 
     public Squeeze(OperationArg argument) {
         this.argument = argument;

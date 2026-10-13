@@ -7,9 +7,9 @@ import java.util.Objects;
 
 public class Spline implements OperationArg {
     public final static String TYPE = "minecraft:spline";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final SplineArg spline;
+    private SplineArg spline;
 
     public Spline(SplineArg spline) {
         this.spline = spline;
@@ -25,8 +25,8 @@ public class Spline implements OperationArg {
         int getHash();
     }
     static class SplineValue implements SplineArg {
-        private final OperationArg coordinate;
-        private final SplinePoint[] points;
+        private OperationArg coordinate;
+        private SplinePoint[] points;
 
         SplineValue(OperationArg coordinate, SplinePoint[] points) {
             this.coordinate = coordinate;
@@ -44,9 +44,9 @@ public class Spline implements OperationArg {
     }
 
     static class SplinePoint {
-        private final double derivative;
-        private final double location;
-        private final SplineArg value;
+        private double derivative;
+        private double location;
+        private SplineArg value;
 
         SplinePoint(double derivative, double location, SplineArg value) {
             this.derivative = derivative;

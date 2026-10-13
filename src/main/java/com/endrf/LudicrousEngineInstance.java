@@ -1,54 +1,47 @@
 package com.endrf;
 
-import java.io.IOException;
-import java.io.InputStream;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.HashMap;
 
 public class LudicrousEngineInstance {
     private final long ptr;
-    private final LudicrousEngine engine;
+    private final HashMap<String, Integer> fdIndexMap;
 
     public LudicrousEngineInstance(long ptr) {
         this.ptr = ptr;
-        this.engine = new LudicrousEngine();
+        this.fdIndexMap = new HashMap<>();
     }
 
-    public void registerShader(String shader) throws IOException {
-        byte[] shaderBytes;
-        try (InputStream in = LudicrousEngine.class.getResourceAsStream("/compute/" + shader + ".spv")) {
-            if (in == null) throw new RuntimeException("Missing Compute Shader: " + shader + ".spv");
-            shaderBytes = in.readAllBytes();
-        }
-        ByteBuffer spirv = ByteBuffer.allocateDirect(shaderBytes.length);
-        spirv.order(ByteOrder.nativeOrder());
-        spirv.put(shaderBytes);
-        spirv.flip();
-        engine.loadShader(this.ptr, spirv);
-    }
-
-    public void setDensityFunction(String json) {
-        engine.setDensityFunction(this.ptr, json);
-    }
-
-    public void setNoiseStates(ArrayList<NoiseStates.NormalNoiseState> noiseStates, ArrayList<NoiseStates.ImprovedNoiseState> noiseLevelStates) {
-        engine.setNoiseStates(this.ptr, noiseStates, noiseLevelStates);
+    public void loadFinalDensityShader(
+            String dimension,
+            int scale,
+            int minY,
+            int height,
+            int noiseX,
+            int noiseY,
+            String json,
+            ArrayList<NoiseStates.NormalNoiseState> noiseStates,
+            ArrayList<NoiseStates.ImprovedNoiseState> noiseLevels
+    ) {
+        this.fdIndexMap.put(dimension, this.fdIndexMap.size());
+        LudicrousEngine.loadFinalDensityShader(this.ptr, scale, minY, height, noiseX, noiseY, json, noiseStates, noiseLevels, dimension);
     }
 
     public double evalDensityFunction(int x, int y, int z) {
-        return engine.evalDensityFunction(this.ptr, x, y, z);
+        return LudicrousEngine.evalDensityFunction(this.ptr, x, y, z);
     }
 
     public double[] fillNoise(int minY, int height, int cellWidth, int cellHeight, int x, int z) {
-        return engine.fillNoise(this.ptr, minY, height, cellWidth, cellHeight, x, z);
+        return LudicrousEngine.fillNoise(this.ptr, minY, height, cellWidth, cellHeight, x, z);
     }
 
-    public ByteBuffer fillNoiseAccel(int minY, int height, int cellWidth, int cellHeight, int x, int z) {
-        return engine.fillNoiseAccel(this.ptr, minY, height, cellWidth, cellHeight, x, z);
+    public ByteBuffer fillNoiseAccel(String dimension, int x, int z, int[] retType) {
+        int fdIndex = this.fdIndexMap.get(dimension);
+        return LudicrousEngine.fillNoiseAccel(this.ptr, fdIndex, x, z, retType);
     }
 
-    public void releaseDensities() {
-        engine.releaseDensities(this.ptr);
+    public void releaseDensities(ByteBuffer buf, int cachedChunkIndex) {
+        LudicrousEngine.releaseDensities(this.ptr, buf, cachedChunkIndex);
     }
 }

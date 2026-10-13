@@ -3,15 +3,16 @@
 	"id": "ludigen",
 	"version": "${version}",
 	"name": "LudiGen",
-	"description": "This is an example description! Tell everyone what your mod is about!",
-	"authors": [
-		"Me!"
+	"description": "GPU-accelerated Terrain Generation at Ludicrous Speeds",
+	"authors": ["Endrf"],
+	"contributors": [
+		"ryanred10"
 	],
 	"contact": {
-		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/FabricMC/fabric-example-mod"
+		"homepage": "https://github.com/LudicrousMC",
+		"sources": "https://github.com/LudicrousMC/ludigen"
 	},
-	"license": "CC0-1.0",
+	"license": "MIT",
 	"icon": "assets/ludigen/icon.png",
 	"environment": "*",
 	"entrypoints": {

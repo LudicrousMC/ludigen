@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class Add implements OperationArg {
     public final static String TYPE = "minecraft:add";
-    private final String type = TYPE;
-    private final OperationArg argument1;
-    private final OperationArg argument2;
+    private String type = TYPE;
+    private OperationArg argument1;
+    private OperationArg argument2;
 
     public Add(OperationArg arg1, OperationArg arg2) {
         this.argument1 = arg1;

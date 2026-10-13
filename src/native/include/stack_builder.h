@@ -27,6 +27,11 @@ typedef struct EvalStack {
     size_t cache_once_len;
     size_t cache_flat_len;
     size_t cache_2d_len;
+    uint32_t scale;
+    int32_t min_y;
+    int32_t height;
+    uint32_t cell_size_x;
+    uint32_t cell_size_y;
 } EvalStack;
 
 typedef struct EvalCache {
@@ -79,10 +84,10 @@ typedef struct Node {
     struct Node**   allChildren;
 } Node;
 
-int max(int *arr, int n); // returns the max from an array of n numbers
+int max_val(int *arr, int n); // returns the max from an array of n numbers
 void register_op(int op_type, int priority, int associative); // registers a new operation
 OpInfo* lookup_op(int op_type); // looks up an operation
-EvalStack* generate_stack_wrapper(Node* node); // wrapper function to generate evaluation stack
+EvalStack* generate_stack_wrapper(Node* node, EvalStack* evalStack); // wrapper function to generate evaluation stack
 Node* create_leaf(int op_type, double* theData); // creates a leaf node with data
 Node* create_op(int op_type, Node** theChildren, double* theData); // creates an operation node with children
 int rotation_is_safe(Node* rest); // CLAUDE FUNCTION - determines whether or not a child is safe to rotate

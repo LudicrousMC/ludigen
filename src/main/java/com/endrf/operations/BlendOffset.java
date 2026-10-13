@@ -4,7 +4,7 @@ import java.util.Objects;
 
 public class BlendOffset implements OperationArg {
     public final static String TYPE = "minecraft:blend_offset";
-    private final String type = TYPE;
+    private String type = TYPE;
 
     @Override
     public int getHash() {

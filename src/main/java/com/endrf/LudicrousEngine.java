@@ -1,11 +1,8 @@
 package com.endrf;
 
-import io.netty.buffer.ByteBuf;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -17,13 +14,25 @@ public class LudicrousEngine {
     }
 
     private static void loadLib(String libFile) {
-        String libPath = "/natives/" + libFile + ".so";
+        String os = System.getProperty("os.name").toLowerCase();
+        String fileExt;
+        if (os.contains("win")) {
+            fileExt = ".dll";
+        } else if (os.contains("mac")) {
+            throw new RuntimeException("LudiGen does not currently support MacOS");
+            //fileExt = ".dylib";
+        } else if (os.contains("nix") || os.contains("nux")) {
+            fileExt = ".so";
+        } else {
+            throw new RuntimeException("No valid Ludicrous Engine Library for target OS: " + os);
+        }
+        String libPath = "/natives/" + libFile + fileExt;
         try (InputStream in = LudicrousEngine.class.getResourceAsStream(libPath)) {
             if (in == null) {
                 throw new RuntimeException("Missing Ludicrous Engine Library: " + libFile);
             }
 
-            Path tmp = Files.createTempFile(libFile, ".so");
+            Path tmp = Files.createTempFile(libFile, fileExt);
             tmp.toFile().deleteOnExit();
 
             Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
@@ -38,17 +47,24 @@ public class LudicrousEngine {
         return new LudicrousEngineInstance(newInstance());
     }
 
-    native void loadShader(long instance, ByteBuffer spirv);
+    static native void loadFinalDensityShader(
+            long instance,
+            int scale,
+            int minY,
+            int height,
+            int noiseX,
+            int noiseY,
+            String json,
+            ArrayList<NoiseStates.NormalNoiseState> noiseStates,
+            ArrayList<NoiseStates.ImprovedNoiseState> noiseLevels,
+            String dimension
+    );
 
-    native void setDensityFunction(long instance, String fnJson);
+    static native double evalDensityFunction(long instance, int x, int y, int z);
 
-    native void setNoiseStates(long instance, ArrayList<NoiseStates.NormalNoiseState> noiseStates, ArrayList<NoiseStates.ImprovedNoiseState> noiseLevelStates);
+    static native double[] fillNoise(long instance, int minY, int height, int cellWidth, int cellHeight, int x, int z);
 
-    native double evalDensityFunction(long instance, int x, int y, int z);
+    static native ByteBuffer fillNoiseAccel(long instance, int fdIndex, int x, int z, int[] retType);
 
-    native double[] fillNoise(long instance, int minY, int height, int cellWidth, int cellHeight, int x, int z);
-
-    native ByteBuffer fillNoiseAccel(long instance, int minY, int height, int cellWidth, int cellHeight, int x, int z);
-
-    native void releaseDensities(long instance);
+    static native void releaseDensities(long instance, ByteBuffer buf, int cachedChunkIndex);
 }

@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class Interpolated implements OperationArg {
     public final static String TYPE = "minecraft:interpolated";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final OperationArg argument;
+    private OperationArg argument;
 
     public Interpolated(OperationArg argument) {
         this.argument = argument;

@@ -4,9 +4,7 @@ import com.endrf.mixin.BlendedNoiseAccessor;
 import com.endrf.mixin.ImprovedNoiseAccessor;
 import com.endrf.mixin.NormalNoiseAccessor;
 import com.endrf.mixin.PerlinNoiseAccessor;
-import it.unimi.dsi.fastutil.Pair;
 import it.unimi.dsi.fastutil.doubles.DoubleList;
-import net.minecraft.world.level.levelgen.DensityFunction;
 import net.minecraft.world.level.levelgen.LegacyRandomSource;
 import net.minecraft.world.level.levelgen.PositionalRandomFactory;
 import net.minecraft.world.level.levelgen.XoroshiroRandomSource;
@@ -18,8 +16,6 @@ import java.util.*;
 
 public class NoiseStates {
     public static HashMap<String, NormalNoiseData> noisesMap = new HashMap<>();
-    //public static ArrayList<NormalNoiseState> noiseStates = new ArrayList<>();
-    //public static ArrayList<ImprovedNoiseState> noiseLevelStates = new ArrayList<>();
     // Maps density function -> noise state indexes in noiseStates
     static HashMap<String, ArrayList<NormalNoiseData>> dfNoiseMap = new HashMap<>();
 
@@ -53,8 +49,10 @@ public class NoiseStates {
     public static NoiseStatesHolder generateNoiseStates(String dfIdentifier) {
         ArrayList<NormalNoiseState> noiseStates = new ArrayList<>();
         ArrayList<ImprovedNoiseState> noiseLevels = new ArrayList<>();
-        for (NormalNoiseData noiseData : dfNoiseMap.get(dfIdentifier)) {
-            noiseStates.add(createNoiseState(noiseData.noise, noiseData.params, noiseLevels));
+        if (dfNoiseMap.containsKey(dfIdentifier)) {
+            for (NormalNoiseData noiseData : dfNoiseMap.get(dfIdentifier)) {
+                noiseStates.add(createNoiseState(noiseData.noise, noiseData.params, noiseLevels));
+            }
         }
         addOldBlendedNoise(noiseStates, noiseLevels);
         return new NoiseStatesHolder(noiseStates, noiseLevels);
@@ -80,8 +78,7 @@ public class NoiseStates {
                         iNoise.yo,
                         iNoise.zo,
                         ((ImprovedNoiseAccessor) (Object) iNoise).getP(),
-                        params.amplitudes[i],
-                        false
+                        params.amplitudes[i]
                 ));
             }
         }
@@ -103,8 +100,7 @@ public class NoiseStates {
                         iNoise.yo,
                         iNoise.zo,
                         ((ImprovedNoiseAccessor) (Object) iNoise).getP(),
-                        params.amplitudes[i],
-                        false
+                        params.amplitudes[i]
                 ));
             }
         }
@@ -116,7 +112,7 @@ public class NoiseStates {
     }
 
     public static void addOldBlendedNoise(ArrayList<NormalNoiseState> noiseStates, ArrayList<ImprovedNoiseState> noiseLevelStates) {
-        BlendedNoiseAccessor blendedNoise = (BlendedNoiseAccessor)BlendedNoise.createUnseeded(0.0, 0.0, 0.0, 0.0, 0.0);
+        BlendedNoiseAccessor blendedNoise = (BlendedNoiseAccessor)BlendedNoise.createUnseeded(0.0, 0.0, 0.0, 0.0, 2.0);
         PerlinNoiseAccessor perlin1 = (PerlinNoiseAccessor)blendedNoise.getMaxLimitNoise();
         ImprovedNoise[] perlin1Levels = perlin1.getNoiseLevels();
         PerlinNoiseState perlinState1 = new PerlinNoiseState(
@@ -130,13 +126,17 @@ public class NoiseStates {
             if (iNoise == null) {
                 noiseLevelStates.add(ImprovedNoiseState.createDisabled());
             } else {
+                /*System.out.println(iNoise.xo + " " + iNoise.yo + " " + iNoise.zo);
+                int[] unsB = new int[iNoise.p.length];
+                for (int k = 0; k < 256; k++)
+                    unsB[k] = Byte.toUnsignedInt(iNoise.p[k]);
+                System.out.println("max " + i + ": " + Arrays.toString(unsB));*/
                 noiseLevelStates.add(new ImprovedNoiseState(
                         iNoise.xo,
                         iNoise.yo,
                         iNoise.zo,
                         ((ImprovedNoiseAccessor) (Object) iNoise).getP(),
-                        1.0,
-                        false
+                        1.0
                 ));
             }
         }
@@ -147,13 +147,17 @@ public class NoiseStates {
             if (iNoise == null) {
                 noiseLevelStates.add(ImprovedNoiseState.createDisabled());
             } else {
+                /*System.out.println(iNoise.xo + " " + iNoise.yo + " " + iNoise.zo);
+                int[] unsB = new int[iNoise.p.length];
+                for (int k = 0; k < 256; k++)
+                    unsB[k] = Byte.toUnsignedInt(iNoise.p[k]);
+                System.out.println("min " + i + ": " + Arrays.toString(unsB));*/
                 noiseLevelStates.add(new ImprovedNoiseState(
                         iNoise.xo,
                         iNoise.yo,
                         iNoise.zo,
                         ((ImprovedNoiseAccessor) (Object) iNoise).getP(),
-                        1.0,
-                        false
+                        1.0
                 ));
             }
         }
@@ -170,13 +174,17 @@ public class NoiseStates {
             if (iNoise == null) {
                 noiseLevelStates.add(ImprovedNoiseState.createDisabled());
             } else {
+                /*System.out.println(iNoise.xo + " " + iNoise.yo + " " + iNoise.zo);
+                int[] unsB = new int[iNoise.p.length];
+                for (int k = 0; k < 256; k++)
+                    unsB[k] = Byte.toUnsignedInt(iNoise.p[k]);
+                System.out.println("main " + i + ": " + Arrays.toString(unsB));*/
                 noiseLevelStates.add(new ImprovedNoiseState(
                         iNoise.xo,
                         iNoise.yo,
                         iNoise.zo,
                         ((ImprovedNoiseAccessor) (Object) iNoise).getP(),
-                        1.0,
-                        false
+                        1.0
                 ));
             }
         }
@@ -219,9 +227,9 @@ public class NoiseStates {
         public double z;
         public byte[] values;
         public double amplitude;
-        public boolean disabled;
+        public byte disabled;
 
-        public ImprovedNoiseState(double x, double y, double z, byte[] values, double amplitude, boolean disabled) {
+        public ImprovedNoiseState(double x, double y, double z, byte[] values, double amplitude, byte disabled) {
             this.x = x;
             this.y = y;
             this.z = z;
@@ -230,12 +238,21 @@ public class NoiseStates {
             this.disabled = disabled;
         }
 
+        public ImprovedNoiseState(double x, double y, double z, byte[] values, double amplitude) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+            this.values = values;
+            this.amplitude = amplitude;
+            this.disabled = 0;
+        }
+
         public static ImprovedNoiseState createDisabled() {
-            return new ImprovedNoiseState(0, 0, 0, null, 0, true);
+            return new ImprovedNoiseState(0, 0, 0, null, 0, (byte)1);
         }
     }
 
-    static class NormalNoiseData {
+    public static class NormalNoiseData {
         public NormalNoise noise;
         public JsonManager.NoiseParameter params;
 

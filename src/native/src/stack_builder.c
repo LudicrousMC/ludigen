@@ -14,7 +14,7 @@
 OpInfo op_table[MAX_OPS];
 int    op_count = 0;
 
-int max(int *arr, int n) {
+int max_val(int *arr, int n) {
     int m = arr[0];
     for (int i = 1; i < n; i++)
         if (arr[i] > m) m = arr[i];
@@ -50,7 +50,7 @@ static int preorder_traversal_depth_count(Node* root) {
         if (root->allChildren[i]) finalDepths[i] = preorder_traversal_depth_count(root->allChildren[i]);
     }
 
-    root->depth = max(finalDepths, root->numChildren);
+    root->depth = max_val(finalDepths, root->numChildren);
     return root->depth + 1;
 }
 
@@ -70,6 +70,8 @@ static EvalStackAllocReqs preorder_traversal_alloc_reqs(Node* root) {
         return (EvalStackAllocReqs){1,1,0};
     case OP_OLD_BLENDED_NOISE:
         return (EvalStackAllocReqs){1,5,0};
+    case OP_END_ISLANDS:
+        return (EvalStackAllocReqs){1,0,0};
     default:
         break;
     }
@@ -155,13 +157,15 @@ static int generate_stack_recursive(EvalStack* evalStack, Node* node, int regPos
     return node->generate_stack_recursive_from_op(evalStack, currentFrameIndex, node, regPos);
 }
 
-EvalStack* generate_stack_wrapper(Node* node) {
+EvalStack* generate_stack_wrapper(Node* node, EvalStack* evalStack) {
     preorder_traversal_depth_count(node);
     EvalStackAllocReqs evalStackAlloc = preorder_traversal_alloc_reqs(node);
+    evalStackAlloc.op_stack_len++; // for halt frame
+    //evalStackAlloc.interp_pc_indexes_len += evalStack->noise_states_len;
 
-    EvalStack* evalStack = (EvalStack*)malloc(sizeof(EvalStack));
+    //EvalStack* evalStack = (EvalStack*)malloc(sizeof(EvalStack));
     // Allocate stack arrays
-    evalStack->op_stack = (StackFrame*)malloc(sizeof(StackFrame) * (evalStackAlloc.op_stack_len + 1));
+    evalStack->op_stack = (StackFrame*)malloc(sizeof(StackFrame) * evalStackAlloc.op_stack_len);
     evalStack->op_stack[0] = (StackFrame){.op_type = OP_HALT};
     evalStack->op_stack_len = 1;
     evalStack->const_args = (double*)malloc(sizeof(double) * evalStackAlloc.const_args_len);
@@ -174,9 +178,8 @@ EvalStack* generate_stack_wrapper(Node* node) {
     evalStack->cache_2d_len = 0;
 
     generate_stack_recursive(evalStack, node, 0);
-    printf("alloc reqs %d %d %d\n", evalStackAlloc.op_stack_len, evalStackAlloc.const_args_len, evalStackAlloc.interp_pc_indexes_len);
-    printf("real reqs %d %d %d\n", evalStack->op_stack_len, evalStack->const_args_len, evalStack->interp_len);
-
+    //printf("alloc reqs %d %d %d\n", evalStackAlloc.op_stack_len, evalStackAlloc.const_args_len, evalStackAlloc.interp_pc_indexes_len);
+    //printf("real reqs %d %d %d\n", evalStack->op_stack_len, evalStack->const_args_len, evalStack->interp_len);
     return evalStack;
 }
 
@@ -361,7 +364,8 @@ static int interpolated_op_gen(EvalStack* evalStack, size_t currentFrameIndex, N
         .const_index = -(currentFrameIndex + 1), // Skip PC if sample is cached
         .result_index = regPos
     };
-    evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[0] = evalStack->interp_len++;
+    // arg_index[0] unused
+    evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[1] = evalStack->interp_len++;
     // interp cache frame to Pre-interp PC for after calculating sample value
     evalStack->op_stack[currentFrameIndex].const_index = evalStack->op_stack_len;
 
@@ -375,11 +379,12 @@ static int cache_once_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Nod
         .const_index = -(currentFrameIndex + 1), // Skip PC if value is in cache
         .result_index = regPos
     };
-    evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[0] = node->values[0]; // cache function index
+    // arg_indexes[0] unused
+    evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[1] = node->values[0]; // cache function index
     if (node->values[0] + 1 > evalStack->cache_once_len)
         evalStack->cache_once_len = node->values[0] + 1;
 
-    evalStack->op_stack[currentFrameIndex].const_index = node->values[0]; // cache function index
+    evalStack->op_stack[currentFrameIndex].arg_indexes[1] = node->values[0]; // cache function index
     return regPos;
 }
 
@@ -390,11 +395,12 @@ static int cache_flat_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Nod
         .const_index = -(currentFrameIndex + 1), // Skip PC if value is in cache
         .result_index = regPos
     };
-    evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[0] = node->values[0]; // cache function index
+    // arg_indexes[0] unused
+    evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[1] = node->values[0]; // cache function index
     if (node->values[0] + 1 > evalStack->cache_flat_len)
         evalStack->cache_flat_len = node->values[0] + 1;
 
-    evalStack->op_stack[currentFrameIndex].const_index = node->values[0]; // cache function index
+    evalStack->op_stack[currentFrameIndex].arg_indexes[1] = node->values[0]; // cache function index
     return regPos;
 }
 
@@ -405,11 +411,12 @@ static int cache_2d_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node*
         .const_index = -(currentFrameIndex + 1), // Skip PC if value is in cache
         .result_index = regPos
     };
-    evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[0] = node->values[0]; // cache function index
+    // arg_indexes[0] unused
+    evalStack->op_stack[evalStack->op_stack_len - 1].arg_indexes[1] = node->values[0]; // cache function index
     if (node->values[0] + 1 > evalStack->cache_2d_len)
         evalStack->cache_2d_len = node->values[0] + 1;
 
-    evalStack->op_stack[currentFrameIndex].const_index = node->values[0]; // cache function index
+    evalStack->op_stack[currentFrameIndex].arg_indexes[1] = node->values[0]; // cache function index
     return regPos;
 }
 
@@ -448,6 +455,10 @@ static int shifted_noise_op_gen(EvalStack* evalStack, size_t currentFrameIndex, 
         }
     }
 
+    return regPos;
+}
+
+static int end_island_op_gen(EvalStack* evalStack, size_t currentFrameIndex, Node* node, int regPos) {
     return regPos;
 }
 
@@ -491,10 +502,12 @@ Node* create_leaf(int op_type, double* theData) {
         n->values[0] = 0.0;
         break;
     case OP_BLEND_ALPHA:
-    case OP_END_ISLANDS:
         n->operationType = OP_CONST;
         n->values = (double*)malloc(sizeof(double));
         n->values[0] = 1.0;
+        break;
+    case OP_END_ISLANDS:
+        n->generate_stack_recursive_from_op = end_island_op_gen;
         break;
     default:
         break;
@@ -704,7 +717,7 @@ int larger_arg_right(Node* root) {
         root->allChildren[1] = temp;
     }
 
-    return max((int []){left_max_num_children, right_max_num_children, root->numChildren}, 3);
+    return max_val((int []){left_max_num_children, right_max_num_children, root->numChildren}, 3);
 }
 
 Node* tree_to_vine(Node* root) {

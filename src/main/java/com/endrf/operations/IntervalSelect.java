@@ -4,11 +4,11 @@ import java.util.Objects;
 
 public class IntervalSelect implements OperationArg {
     public final static String TYPE = "minecraft:interval_select";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final OperationArg[] functions;
-    private final OperationArg input;
-    private final double[] thresholds;
+    private OperationArg[] functions;
+    private OperationArg input;
+    private double[] thresholds;
 
     public IntervalSelect(OperationArg[] functions, OperationArg input, double[] thresholds) {
         this.functions = functions;

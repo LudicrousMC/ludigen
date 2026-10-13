@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class Invert implements OperationArg {
     public final static String TYPE = "minecraft:invert";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final OperationArg argument;
+    private OperationArg argument;
 
     public Invert(OperationArg argument) {
         this.argument = argument;

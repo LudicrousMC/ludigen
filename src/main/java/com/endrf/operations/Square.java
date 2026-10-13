@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class Square implements OperationArg {
     public final static String TYPE = "minecraft:square";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final OperationArg argument;
+    private OperationArg argument;
 
     public Square(OperationArg argument) {
         this.argument = argument;

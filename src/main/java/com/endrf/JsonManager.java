@@ -55,10 +55,12 @@ public class JsonManager {
                 } catch (RuntimeException | IOException e) {
                     throw new RuntimeException(e);
                 }
-                worldTypes.put(
-                        f.replaceFirst("data/minecraft/worldgen/noise_settings/", "")
-                                .replaceFirst(".json", ""),
-                        gson.fromJson(json, NoiseSettings.class)
+                String dim = f.replaceFirst("data/minecraft/worldgen/noise_settings/", "")
+                        .replaceFirst(".json", "");
+                if (LudiGen.DIM_MAPPING.containsKey(dim)) {
+                    dim = LudiGen.DIM_MAPPING.get(dim);
+                }
+                worldTypes.put(dim, gson.fromJson(json, NoiseSettings.class)
                 );
             } else if (f.startsWith("data/minecraft/worldgen/noise/")) {
                 String json;

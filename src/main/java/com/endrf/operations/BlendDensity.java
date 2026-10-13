@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class BlendDensity implements OperationArg {
     public final static String TYPE = "minecraft:blend_density";
-    public final String type = TYPE;
+    public String type = TYPE;
 
-    private final OperationArg argument;
+    private OperationArg argument;
 
     public BlendDensity(OperationArg argument) {
         this.argument = argument;

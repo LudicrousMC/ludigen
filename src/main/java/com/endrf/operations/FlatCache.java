@@ -4,9 +4,9 @@ import java.util.Objects;
 
 public class FlatCache implements OperationArg {
     public final static String TYPE = "minecraft:flat_cache";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    public final OperationArg argument;
+    public OperationArg argument;
 
     public FlatCache(OperationArg argument) {
         this.argument = argument;

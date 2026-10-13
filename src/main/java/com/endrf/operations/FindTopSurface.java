@@ -4,12 +4,12 @@ import java.util.Objects;
 
 public class FindTopSurface implements OperationArg {
     public final static String TYPE = "minecraft:find_top_surface";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final int cellHeight;
-    private final OperationArg density;
-    private final int lowerBound;
-    private final OperationArg upperBound;
+    private int cellHeight;
+    private OperationArg density;
+    private int lowerBound;
+    private OperationArg upperBound;
 
     public FindTopSurface(int cellHeight, OperationArg density, int lowerBound, OperationArg upperBound) {
         this.cellHeight = cellHeight;

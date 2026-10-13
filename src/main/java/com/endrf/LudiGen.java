@@ -1,95 +1,87 @@
 package com.endrf;
 
+import com.google.common.base.Stopwatch;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents;
 import net.minecraft.server.Main;
 
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.level.chunk.ChunkGenerator;
+import net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.IOException;
 import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class LudiGen implements ModInitializer {
 	public static final String MOD_ID = "ludigen";
 
-	// This logger is used to write text to the console and the log file.
-	// It is considered best practice to use your mod id as the logger's name.
-	// That way, it's clear which mod wrote info, warnings, and errors.
 	public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+    private static final Logger NATIVE_LOGGER = LoggerFactory.getLogger(MOD_ID + "/Engine");
+
+    public static HashMap<String, String> DIM_MAPPING = new HashMap<>(Map.of(
+            "nether", "the_nether",
+            "end", "the_end"
+    ));
 
     public static AtomicReference<Long> seed = new AtomicReference<>();
-    public static HashMap<String, Integer> dimensions = new HashMap<>();
+    private static JsonManager json;
     public static LudicrousEngineInstance instance;
 
     public static int testCounter = -1;
     public static long testStart = 0;
+    public static long totalTime = 0;
+    public static long totalChunks = 0;
 
 	@Override
 	public void onInitialize() {
-		// This code runs as soon as Minecraft is in a mod-load-ready state.
-		// However, some things (like resources) may still be uninitialized.
-		// Proceed with mild caution.
+        instance = LudicrousEngine.createInstance();
         ServerLevelEvents.LOAD.register((MinecraftServer server, ServerLevel level) -> {
             if (seed.get() == null) {
                 seed.set(server.getWorldGenSettings().options().seed());
-                System.out.println("seed " + seed);
-                startInstance();
+                try {
+                    Stopwatch sw = Stopwatch.createStarted();
+                    json = new JsonManager(Main.class);
+                    LOGGER.info("Serialized terrain density JSON files and generated Noise States in {}", sw);
+                } catch (Exception e) {
+                    throw new RuntimeException(e);
+                }
+
             }
-            long seed = LudiGen.seed.get();
-            String dim = level.dimension().identifier().getPath();
-            //dimensions.put(dim, );
-            System.out.println(level.dimension().identifier().getPath());
+            ChunkGenerator generator = level.getChunkSource().getGenerator();
+            if (generator instanceof NoiseBasedChunkGenerator gen) {
+                String dim = level.dimension().identifier().getPath();
+                NoiseStates.NoiseStatesHolder noiseStatesData = NoiseStates.generateNoiseStates(dim + ":final_density");
+                String fnJson = json.worldTypes.get(dim).jsonDensityFunctions.get("final_density");
+                instance.loadFinalDensityShader(
+                        dim,
+                        3,
+                        level.getMinY(),
+                        level.getLogicalHeight(),
+                        gen.generatorSettings().value().noiseSettings().noiseSizeHorizontal(),
+                        gen.generatorSettings().value().noiseSettings().noiseSizeVertical(),
+                        fnJson,
+                        noiseStatesData.noiseStates,
+                        noiseStatesData.noiseLevels
+                );
+            }
         });
 
-
-		/*String json;
-		try (InputStream in = Main.class.getResourceAsStream("/data/minecraft/worldgen/density_function/overworld_amplified/depth.json")) {
-			if (in == null) throw new RuntimeException("Not found");
-			json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-		} catch (RuntimeException | IOException e) {
-			throw new RuntimeException(e);
-		}
-		Gson gson = new GsonBuilder().registerTypeAdapter(OperationArg.class, new OperationDeserializer())
-				.setFieldNamingPolicy(FieldNamingPolicy.LOWER_CASE_WITH_UNDERSCORES).create();
-		LOGGER.info(json);
-		OperationArg res = gson.fromJson(json, OperationArg.class);
-        //LOGGER.info(((ExternalArg)(((Add)res).argument2)).path);
-		LOGGER.info("res = " + gson.toJson(res));*/
-
-
-        //LOGGER.info("ptr " + instance);
-
-        LOGGER.info("Hello Fabric world!");
 	}
 
-    public void startInstance() {
-        JsonManager json;
-        try {
-            json = new JsonManager(Main.class);
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
-        instance = LudicrousEngine.createInstance();
-        instance.setDensityFunction(json.worldTypes.get("overworld").jsonDensityFunctions.get("final_density"));
-        NoiseStates.NoiseStatesHolder noiseStatesData = NoiseStates.generateNoiseStates("overworld:final_density");
-        instance.setNoiseStates(noiseStatesData.noiseStates, noiseStatesData.noiseLevels);
-        long start = System.nanoTime();
-        double densityTest = instance.evalDensityFunction(-5, 112, 60);
-        //double densityTest = instance.evalDensityFunction(368, 105, 461);
-        //double densityTest = instance.evalDensityFunction(-228, 82, 82);
-        long end = System.nanoTime();
-        System.out.println("density test: " + densityTest + " (-0.07504367162405336)");
-        System.out.println("time: " + (end - start));
-        //LudicrousEngine.test();
-        try {
-            instance.registerShader("eval");
-        } catch (IOException e) {
-            throw new RuntimeException(e);
-        }
+    public static void nativeLogInfoInterface(String message) {
+        NATIVE_LOGGER.info(message);
+    }
+
+    public static void nativeLogErrorInterface(String message) {
+        NATIVE_LOGGER.error(message);
+    }
+
+    public static void nativeLogDebugInterface(String message) {
+        NATIVE_LOGGER.debug(message);
     }
 
     public static void inc() {

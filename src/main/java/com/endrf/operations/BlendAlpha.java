@@ -4,7 +4,7 @@ import java.util.Objects;
 
 public class BlendAlpha implements OperationArg {
     public final static String TYPE = "minecraft:blend_alpha";
-    private final String type = TYPE;
+    private String type = TYPE;
 
     @Override
     public int getHash() {

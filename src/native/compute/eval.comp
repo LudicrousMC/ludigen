@@ -2,7 +2,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types : enable
 #extension GL_EXT_shader_8bit_storage : enable
 #extension GL_EXT_shader_16bit_storage : enable
-#extension GL_EXT_scalar_block_layout : enable
+//#extension GL_EXT_scalar_block_layout : enable
 #extension GL_ARB_gpu_shader_fp64 : require
 #extension GL_GOOGLE_include_directive : require
 
@@ -10,20 +10,19 @@
 #include "op_stack.h"
 #include "op_types.h"
 #include "noise_gen.h"
-#define fp_t double
+#define fp_t float
 layout (local_size_x = 64) in;
 layout (constant_id = 0) const uint REGISTERS = 1;
-layout (constant_id = 1) const uint HEIGHT = 384;
+layout (constant_id = 1) const uint HEIGHT = 0;
 layout (constant_id = 2) const uint CELL_WIDTH = 4;
 layout (constant_id = 3) const uint CELL_HEIGHT = 8;
-layout (constant_id = 4) const uint INTERP_LEN = 1;
+layout (constant_id = 4) const uint PRECOMP_LEN = 1;
 layout (constant_id = 5) const uint CACHE_ONCE_LEN = 1;
 layout (constant_id = 6) const uint CACHE_FLAT_LEN = 1;
 layout (constant_id = 7) const uint CACHE_2D_LEN = 1;
-shared fp_t regs[gl_WorkGroupSize.x * REGISTERS];
-shared fp_t cache_once[gl_WorkGroupSize.x * CACHE_ONCE_LEN];
+layout (constant_id = 8) const uint HORIZ_CHUNKS = 3;
 layout (push_constant) uniform PushConstants {
-    ivec4 coords;
+    ivec4 coords_and_stage;
 };
 
 layout (std430, set = 0, binding = 0) readonly buffer FramesBuffer {
@@ -42,27 +41,26 @@ layout (std430, set = 0, binding = 3) readonly buffer NoiseLevelsBuffer {
     ImprovedNoise noise_levels[];
 };
 
-layout (std430, set = 0, binding = 4) readonly buffer InterpIndexes {
-    uint32_t interp_indexes[];
+layout (std430, set = 0, binding = 4) readonly buffer PrecompIndexes {
+    uint32_t precomp_indexes[];
 };
 
 layout (std430, set = 0, binding = 5) writeonly buffer OutputBuffer {
-    double buf_out[];
+    fp_t buf_out[];
 };
 
-layout(std430, set = 1, binding = 0) buffer InterpolationBuffer {
+layout (std430, set = 1, binding = 0) buffer InterpolationBuffer {
     fp_t interp[];
 };
 
-layout (std430, set = 1, binding = 1) buffer CacheFlatBuffer {
+layout (std430, set = 1, binding = 1) coherent buffer CacheFlatBuffer {
     fp_t cache_flat[];
 };
 
-layout (std430, set = 1, binding = 2) buffer Cache2DBuffer {
+layout (std430, set = 1, binding = 2) coherent buffer Cache2DBuffer {
     fp_t cache_2d[];
 };
 
-//double lerp(double pos, double x0, double x1);
 fp_t inverse_lerp(fp_t pos, fp_t x, fp_t y);
 fp_t clamped_map(
     fp_t pos1,
@@ -82,38 +80,42 @@ float spline_compute(
     float coord
 );
 double wrap(double val);
-double generate_improved_noise(
+fp_t generate_improved_noise(
     int level_index,
-    double x,
-    double y,
-    double z,
-    double val1,
-    double val2
+    fp_t x,
+    fp_t y,
+    fp_t z,
+    fp_t val1,
+    fp_t val2
 );
-double generate_perlin_noise(PerlinNoise noise, double x, double y, double z);
-double generate_normal_noise(int noise_index, double x, double y, double z);
+fp_t generate_perlin_noise(PerlinNoise noise, fp_t x, fp_t y, fp_t z);
+fp_t generate_normal_noise(int noise_index, fp_t x, fp_t y, fp_t z);
+fp_t generate_simplex_noise(fp_t x, fp_t y);
 
-int pos_mod(int a, int b) {
-    return (a % b + b) % b;
+uint pos_mod(int a, uint b) {
+    return (a % int(b) + int(b)) % int(b);
 }
 
-fp_t get_arg(int pc, int arg_num) {
+fp_t fp_mod(fp_t a, fp_t b) {
+    return a - trunc(a / b) * b;
+}
+
+fp_t get_arg(int pc, int arg_num, fp_t regs[REGISTERS]) {
     int arg_index = int(frames[pc].arg_indexes[arg_num]);
-    return arg_index < 0 ? fp_t(const_args[~arg_index]) : regs[arg_index + (gl_LocalInvocationIndex * REGISTERS)];
+    return arg_index < 0 ? fp_t(const_args[~arg_index]) : regs[arg_index/* + (gl_LocalInvocationIndex * REGISTERS)*/];
 }
 
 fp_t get_const(int pc, int const_num) {
     return fp_t(const_args[int(frames[pc].const_index) + const_num]);
 }
 
-#define STAGE_COMPUTE_FULL   0
+#define STAGE_COMPUTE_FULL   3
 #define STAGE_RESET_CACHES   1
 #define STAGE_COMPUTE_CACHES 2
-#define STAGE_COMPUTE_NOISES 3
 
 void main() {
     uint index = gl_GlobalInvocationID.x;
-    int stage = coords.w;
+    int stage = coords_and_stage.w;
     if (stage == STAGE_RESET_CACHES) {
         if (index < cache_flat.length()) {
             cache_flat[index] = sqrt(-1.0);
@@ -123,101 +125,132 @@ void main() {
         }
         return;
     }
-
+    ivec3 coords = coords_and_stage.xyz;
+    uint cell_width_exp = findMSB(CELL_WIDTH);
+    uint cell_height_exp = findMSB(CELL_HEIGHT);
+    uint width = 16u * HORIZ_CHUNKS;
+    uint chunk_cells = 16u >> cell_width_exp;
     uint local_index = gl_LocalInvocationIndex;
     uint cell_blocks = CELL_WIDTH * CELL_WIDTH * CELL_HEIGHT;
-    uint horiz_cells = 16u / CELL_WIDTH;
+    uint cell_blocks_exp = cell_width_exp + cell_width_exp + cell_height_exp;
+    uint horiz_cells = width >> cell_width_exp;
     uint xz_samples = horiz_cells + 1;
-    uint y_samples = (HEIGHT / CELL_HEIGHT) + 1;
-    uint y_cell = index / (256u * CELL_HEIGHT);
-    uint x_cell = (index / cell_blocks) % horiz_cells;
-    uint z_cell = (index / (cell_blocks * horiz_cells)) % horiz_cells;
-    int y_base = int(y_cell * CELL_HEIGHT) + int(index % CELL_HEIGHT);
-    int x_base = int(x_cell * CELL_WIDTH) + int((index / CELL_HEIGHT) % CELL_WIDTH);
-    int z_base = int(z_cell * CELL_WIDTH)
-        + int((index / (CELL_HEIGHT * CELL_WIDTH)) % CELL_WIDTH);
-    int y = coords.y + y_base;
-    int x = coords.x + x_base;
-    int z = coords.z + z_base;
-    if (stage == STAGE_COMPUTE_CACHES) {
-        y_base = int(index % y_samples);
-        x_base = int((index / y_samples) % xz_samples);
-        z_base = int((index / (xz_samples * y_samples)) % xz_samples);
-        y = coords.y + y_base * int(CELL_HEIGHT);
-        x = coords.x + x_base * int(CELL_WIDTH);
-        z = coords.z + z_base * int(CELL_WIDTH);
-    }
-    int x_actual = x;
-    int y_actual = y;
-    int z_actual = z;
-    int temp_x = x;
-    int temp_y = y;
-    int temp_z = z;
+    uint chunk_blocks = 16u * 16u * HEIGHT;
+    uint y_samples = (HEIGHT >> cell_height_exp) + 1;
 
-    for (int i = 0; i < CACHE_ONCE_LEN; i++) {
-        cache_once[local_index * CACHE_ONCE_LEN + i] = sqrt(-1.0);
+    // Compute ordering dimensions (Ordered by slowest to fastest increasing):
+    // Layer 1 (Super Chunk): Cell Y -> Cell Z -> Cell X
+    // Layer 2 (Cell): Block Z -> Block X -> Block Y
+    uint y_cell, z_cell, x_cell;
+    if (stage == STAGE_COMPUTE_CACHES) {
+        // Sample Z -> Sample X -> Sample Y (Y first to take advantage of cache locality)
+        z_cell = (index / (xz_samples * y_samples)) % xz_samples;
+        x_cell = (index / y_samples) % xz_samples;
+        y_cell = index % y_samples;
+    } else {
+        y_cell = index / (cell_blocks * horiz_cells * horiz_cells);
+        z_cell = (index / (cell_blocks * horiz_cells)) % horiz_cells;
+        x_cell = (index >> cell_blocks_exp) % horiz_cells;
     }
-    barrier();
-    int interp_pc_index = 0;
+    uint y_cell_block = 0;
+    uint x_cell_block = 0;
+    uint z_cell_block = 0;
+    if (stage != STAGE_COMPUTE_CACHES) {
+        y_cell_block = index & (CELL_HEIGHT - 1);
+        x_cell_block = (index >> cell_height_exp) & (CELL_WIDTH - 1);
+        z_cell_block = (index >> (cell_height_exp + cell_width_exp)) & (CELL_WIDTH - 1);
+    }
+    int y = coords.y + int(y_cell * CELL_HEIGHT) + int(y_cell_block);
+    int x = coords.x + int(x_cell * CELL_WIDTH) + int(x_cell_block);
+    int z = coords.z + int(z_cell * CELL_WIDTH) + int(z_cell_block);
+    uint z_chunk = (z - coords.z) >> 4;
+    uint x_chunk = (x - coords.x) >> 4;
+    // Output ordering dimensions:
+    // Layer 1 (Super Chunk): Chunk Z -> Chunk X
+    // Layer 2 (Chunk): Block Y -> Block Z -> Block X
+    uint output_index = z_chunk * chunk_blocks * HORIZ_CHUNKS
+        + x_chunk * chunk_blocks
+        + ((y_cell * CELL_HEIGHT) + y_cell_block) * 256u
+        + (((z_cell & (chunk_cells - 1)) * CELL_WIDTH) + z_cell_block) * 16u
+        + ((x_cell & (chunk_cells - 1)) * CELL_WIDTH) + x_cell_block;
+    int actual_x = x;
+    int actual_y = y;
+    int actual_z = z;
+
+    fp_t cache_once[CACHE_ONCE_LEN];
+    if (stage == STAGE_COMPUTE_CACHES) {
+        for (int i = 0; i < CACHE_ONCE_LEN; i++) {
+            cache_once[i] = sqrt(-1.0);
+        }
+        barrier();
+    }
+
+    fp_t regs[REGISTERS];
+    for (int i = 0; i < REGISTERS; i++) {
+        regs[i] = 0.0;
+    }
+    int precomp_pc_index = 0;
     int pc_start = stage == STAGE_COMPUTE_CACHES
-        ? int(interp_indexes[interp_pc_index]) - 1
+        ? int(precomp_indexes[precomp_pc_index]) - 1
         : frames.length() - 1;
     for (int pc = pc_start; pc > 0; pc--) {
-        int result_index = int(frames[pc].result_index + (local_index * REGISTERS));
+        int result_index = int(frames[pc].result_index);
         switch (int(frames[pc].op_type)) {
             case OP_ADD:
-                regs[result_index] = get_arg(pc, 0) + get_arg(pc, 1);
+                regs[result_index] = get_arg(pc, 0, regs) + get_arg(pc, 1, regs);
                 break;
             case OP_MUL:
-                regs[result_index] = get_arg(pc, 0) * get_arg(pc, 1);
+                regs[result_index] = get_arg(pc, 0, regs) * get_arg(pc, 1, regs);
                 break;
             case OP_MIN: {
-                fp_t arg1 = get_arg(pc, 0);
-                fp_t arg2 = get_arg(pc, 1);
-                regs[result_index] = arg1 < arg2 ? arg1 : arg2;
+                fp_t arg1 = get_arg(pc, 0, regs);
+                fp_t arg2 = get_arg(pc, 1, regs);
+                regs[result_index] = min(arg1, arg2);
                 break;
             }
             case OP_MAX: {
-                fp_t arg1 = get_arg(pc, 0);
-                fp_t arg2 = get_arg(pc, 1);
-                regs[result_index] = arg1 > arg2 ? arg1 : arg2;
+                fp_t arg1 = get_arg(pc, 0, regs);
+                fp_t arg2 = get_arg(pc, 1, regs);
+                regs[result_index] = max(arg1, arg2);
                 break;
             }
             case OP_ABS:
-                regs[result_index] = abs(get_arg(pc, 0));
+                regs[result_index] = abs(get_arg(pc, 0, regs));
                 break;
             case OP_SQUARE: {
-                fp_t arg = get_arg(pc, 0);
+                fp_t arg = get_arg(pc, 0, regs);
                 regs[result_index] = arg * arg;
                 break;
             }
             case OP_CUBE: {
-                fp_t arg = get_arg(pc, 0);
+                fp_t arg = get_arg(pc, 0, regs);
                 regs[result_index] = arg * arg * arg;
                 break;
             }
             case OP_HALF_NEGATIVE: {
-                fp_t arg = get_arg(pc, 0);
-                regs[result_index] = arg < 0.0 ? arg * 0.5 : arg;
+                fp_t arg = get_arg(pc, 0, regs);
+                // arg < 0.0 ? arg * 0.5 : arg;
+                regs[result_index] = min(arg, 0.0) * 0.5 + max(arg, 0.0);
                 break;
             }
             case OP_QUARTER_NEGATIVE: {
-                fp_t arg = get_arg(pc, 0);
-                regs[result_index] = arg < 0.0 ? arg * 0.25 : arg;
+                fp_t arg = get_arg(pc, 0, regs);
+                // arg < 0.0 ? arg * 0.25 : arg
+                regs[result_index] = min(arg, 0.0) * 0.25 + max(arg, 0.0);
                 break;
             }
             case OP_INVERT:
-                regs[result_index] = 1.0 / get_arg(pc, 0);
+                regs[result_index] = 1.0 / get_arg(pc, 0, regs);
                 break;
             case OP_SQUEEZE: {
-                fp_t clamped_val = min(max(get_arg(pc, 0), -1.0), 1.0);
+                fp_t clamped_val = min(max(get_arg(pc, 0, regs), -1.0), 1.0);
                 regs[result_index] = (clamped_val * 0.5) - (clamped_val * clamped_val * clamped_val * 0.04166666666666667);
                 break;
             }
             case OP_CLAMP: {
                 fp_t minimum = get_const(pc, 0);
                 fp_t maximum = get_const(pc, 1);
-                regs[result_index] = min(max(get_arg(pc, 0), minimum), maximum);
+                regs[result_index] = min(max(get_arg(pc, 0, regs), minimum), maximum);
                 break;
             }
             case OP_Y_CLAMPED_GRAD: {
@@ -235,25 +268,24 @@ void main() {
                     int main_pc_index = ~const_index;
                     int cell_height = int(get_const(main_pc_index, 0));
                     int lower_bound = int(get_const(main_pc_index, 1));
-                    int top_y = int(floor(get_arg(main_pc_index, 0)) / cell_height) * cell_height;
+                    int top_y = int(floor(get_arg(main_pc_index, 0, regs)) / cell_height) * cell_height;
                     if (top_y <= lower_bound) {
                         regs[result_index] = lower_bound;
                         pc = main_pc_index;
                     } else {
                         // Save current y and switch y context to top_y
-                        regs[result_index] = fp_t(y);
                         y = top_y;
                     }
                 } else {
                     // Find Top Surface Main
                     int cell_height = int(get_const(pc, 0));
                     int lower_bound = int(get_const(pc, 1));
-                    fp_t density = get_arg(pc, 1);
+                    fp_t density = get_arg(pc, 1, regs);
 
                     if (density > 0.0) {
                         int block_y = y;
                         // Switch y context back to old y
-                        y = int(regs[result_index]);
+                        y = actual_y;
                         regs[result_index] = block_y;
                     } else if (y >= lower_bound) {
                         if (int(frames[pc].arg_indexes[1]) < 0) {
@@ -265,7 +297,7 @@ void main() {
                         y -= cell_height;
                     } else {
                         // Switch y context back to old y
-                        y = int(regs[result_index]);
+                        y = actual_y;
                         regs[result_index] = lower_bound;
                     }
                 }
@@ -277,10 +309,19 @@ void main() {
                     pc = ~const_index;
                     break;
                 }
-                fp_t input_arg = get_arg(pc, 0);
+                fp_t input_arg = get_arg(pc, 0, regs);
                 fp_t min_incl = get_const(pc, 0);
                 fp_t max_excl = get_const(pc, 1);
-                if (input_arg < max_excl && input_arg >= min_incl) {
+                bool in_range = input_arg >= min_incl && input_arg < max_excl;
+                int arg_index = mix(2, 1, in_range);
+                int target_index = int(frames[pc].arg_indexes[arg_index]);
+                if (target_index < 0) {
+                    regs[result_index] = get_arg(pc, arg_index, regs);
+                    pc = int(get_const(pc, 2));
+                } else {
+                    pc = mix(target_index, pc, in_range);
+                }
+                /*if (input_arg < max_excl && input_arg >= min_incl) {
                     int in_range_index = int(frames[pc].arg_indexes[1]);
                     if (in_range_index < 0) {
                         regs[result_index] = get_arg(pc, 1);
@@ -294,7 +335,7 @@ void main() {
                     } else {
                         pc = out_of_range_index;
                     }
-                }
+                }*/
                 break;
             }
             case OP_INTERVAL_SELECT: {
@@ -304,7 +345,7 @@ void main() {
                     break;
                 }
                 int num_thresholds = int(frames[pc].arg_indexes[1]);
-                fp_t input_arg = get_arg(pc, 0);
+                fp_t input_arg = get_arg(pc, 0, regs);
                 // Find interval range
                 for (int i = 0; i <= num_thresholds; i++) {
                     if (i == num_thresholds || input_arg < get_const(pc, i)) {
@@ -321,63 +362,64 @@ void main() {
                 break;
             }
             case OP_NOISE: {
+                int noise_index = int(get_const(pc, 0));
                 fp_t xz_scale = get_const(pc, 1);
                 fp_t y_scale = get_const(pc, 2);
-                regs[result_index] = fp_t(generate_normal_noise(
-                    int(get_const(pc, 0)),
-                    double(x) * xz_scale,
-                    double(y) * y_scale,
-                    double(z) * xz_scale
-                ));
+                regs[result_index] = generate_normal_noise(
+                    noise_index,
+                    fp_t(x) * xz_scale,
+                    fp_t(y) * y_scale,
+                    fp_t(z) * xz_scale
+                );
                 break;
             }
             case OP_SHIFTED_NOISE: {
                 fp_t xz_scale = get_const(pc, 1);
                 fp_t y_scale = get_const(pc, 2);
-                fp_t shifted_x = (fp_t(x) * xz_scale) + get_arg(pc, 0);
-                fp_t shifted_y = (fp_t(y) * y_scale) + get_arg(pc, 1);
-                fp_t shifted_z = (fp_t(z) * xz_scale) + get_arg(pc, 2);
-                regs[result_index] = fp_t(generate_normal_noise(
+                fp_t shifted_x = (fp_t(x) * xz_scale) + get_arg(pc, 0, regs);
+                fp_t shifted_y = (fp_t(y) * y_scale) + get_arg(pc, 1, regs);
+                fp_t shifted_z = (fp_t(z) * xz_scale) + get_arg(pc, 2, regs);
+                regs[result_index] = generate_normal_noise(
                     int(get_const(pc, 0)),
                     shifted_x,
                     shifted_y,
                     shifted_z
-                ));
+                );
                 break;
             }
             case OP_SPLINE: {
-                int const_index = int(frames[pc].const_index);
+                // This is basically a state machine
+                // TODO: Simplify state machine
+                StackFrame frame = frames[pc];
+                int const_index = int(frame.const_index);
                 // If const_index is non negative, treat as main spline, else treat as spline point
                 if (const_index >= 0) {
-                    float coord = float(get_arg(pc, 0));
-                    int num_points = frames[pc].arg_indexes[2];
+                    float coord = float(get_arg(pc, 0, regs));
+                    int num_points = frame.arg_indexes[2];
                     int len = num_points;
                     // Search for point
                     int point_index = 0;
+                    // Branchless binary search
                     while (len > 0) {
-                        int half_len = len / 2;
-                        int mid = point_index + half_len;
-                        if (coord < float(get_const(pc, mid * 3))) {
-                            len = half_len;
-                        } else {
-                            point_index = mid + 1;
-                            len -= half_len + 1;
-                        }
+                        int half_len = len >> 1;
+                        int cond = int(coord >= float(const_args[const_index + (point_index + half_len) * 3]));
+                        point_index += cond * (half_len + 1);
+                        len = half_len + cond * ((len & 1) - 1);
                     }
                     point_index -= 1;
 
                     if (point_index < 0 || point_index == num_points - 1) {
                         // If first point or last point (single point)
                         point_index = point_index < 0 ? 0 : point_index * 3;
-                        int point_pc = int(get_const(pc, point_index + 2));
+                        int point_pc = int(const_args[const_index + point_index + 2]);
                         // If first/last point is constant (negative), save result in register and go to return frame,
                         // else go to point value start frame
                         if (point_pc < 0) {
-                            float point_loc = float(get_const(pc, point_index));
-                            float point_deriv = float(get_const(pc, point_index + 1));
+                            float point_loc = float(const_args[const_index + point_index]);
+                            float point_deriv = float(const_args[const_index + point_index + 1]);
                             float point_value = float(const_args[~point_pc]);
                             regs[result_index] = float(linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value));
-                            pc = frames[pc].arg_indexes[1];
+                            pc = frame.arg_indexes[1];
                         } else {
                             regs[result_index + 1] = 0.0; // Single point indicator
                             pc = point_pc;
@@ -385,15 +427,15 @@ void main() {
                     } else {
                         // If between points, interpolate (double point)
                         point_index *= 3;
-                        int point1_pc = int(get_const(pc, point_index + 2));
-                        int point2_pc = int(get_const(pc, point_index + 5));
+                        int point1_pc = int(const_args[const_index + point_index + 2]);
+                        int point2_pc = int(const_args[const_index + point_index + 5]);
                         // If both points are constants (negative), compute spline and go to return frame,
                         if (point2_pc < 0 && point1_pc < 0) {
-                            float point1_loc = float(get_const(pc, point_index));
-                            float point1_deriv = float(get_const(pc, point_index + 1));
+                            float point1_loc = float(const_args[const_index + point_index]);
+                            float point1_deriv = float(const_args[const_index + point_index + 1]);
                             float point1_value = float(const_args[~point1_pc]);
-                            float point2_loc = float(get_const(pc, point_index + 3));
-                            float point2_deriv = float(get_const(pc, point_index + 4));
+                            float point2_loc = float(const_args[const_index + point_index + 3]);
+                            float point2_deriv = float(const_args[const_index + point_index + 4]);
                             float point2_value = float(const_args[~point2_pc]);
                             regs[result_index] = spline_compute(
                                 point1_loc,
@@ -404,7 +446,7 @@ void main() {
                                 point2_value,
                                 coord
                             );
-                            pc = frames[pc].arg_indexes[1];
+                            pc = frame.arg_indexes[1];
                         } else if (point2_pc < 0) {
                             regs[result_index + 1] = 1.0; // First point eval indicator
                             pc = point1_pc;
@@ -417,33 +459,34 @@ void main() {
                         }
                     }
                 } else {
-                    int main_spline_reg_index = int(frames[pc].result_index + (local_index * REGISTERS));
-                    int main_spline_pc = int(frames[pc].arg_indexes[0]);
+                    int main_spline_reg_index = int(frame.result_index);
+                    int main_spline_pc = int(frame.arg_indexes[0]);
+                    int const_base = frames[main_spline_pc].const_index;
                     int point_indicator = int(regs[main_spline_reg_index + 1]);
                     if (point_indicator == 0) {
                         // Single point eval case
-                        int point_index = int(frames[pc].arg_indexes[1]) * 3;
-                        float coord = float(get_arg(main_spline_pc, 0));
-                        float point_loc = float(get_const(main_spline_pc, point_index));
-                        float point_deriv = float(get_const(main_spline_pc, point_index + 1));
+                        int point_index = int(frame.arg_indexes[1]) * 3;
+                        float coord = float(get_arg(main_spline_pc, 0, regs));
+                        float point_loc = float(const_args[const_base + point_index]);
+                        float point_deriv = float(const_args[const_base + point_index + 1]);
                         float point_value = float(regs[main_spline_reg_index + 3]);
                         regs[result_index] = linear_ext_if_non_zero(point_deriv, point_loc, coord, point_value);
                         pc = ~const_index;
                     } else if (point_indicator >= 1 && point_indicator <= 3) {
                         // First point eval, second point eval, and double point phase 2 eval
                         int point_index = point_indicator == 2
-                            ? int(frames[pc].arg_indexes[1] - 1) * 3
-                            : int(frames[pc].arg_indexes[1]) * 3;
-                        float coord = float(get_arg(main_spline_pc, 0));
-                        float point1_loc = float(get_const(main_spline_pc, point_index));
-                        float point1_deriv = float(get_const(main_spline_pc, point_index + 1));
+                            ? int(frame.arg_indexes[1] - 1) * 3
+                            : int(frame.arg_indexes[1]) * 3;
+                        float coord = float(get_arg(main_spline_pc, 0, regs));
+                        float point1_loc = float(const_args[const_base + point_index]);
+                        float point1_deriv = float(const_args[const_base + point_index + 1]);
                         float point1_value = float(point_indicator != 2
                             ? regs[main_spline_reg_index + 3] // First point eval
-                            : const_args[~int(get_const(main_spline_pc, point_index + 2))]); // Second point eval
-                        float point2_loc = float(get_const(main_spline_pc, point_index + 3));
-                        float point2_deriv = float(get_const(main_spline_pc, point_index + 4));
+                            : const_args[~int(const_args[const_base + point_index + 2])]); // Second point eval
+                        float point2_loc = float(const_args[const_base + point_index + 3]);
+                        float point2_deriv = float(const_args[const_base + point_index + 4]);
                         float point2_value = float(point_indicator == 1
-                            ? const_args[~int(get_const(main_spline_pc, point_index + 5))] // First point eval
+                            ? const_args[~int(const_args[const_base + point_index + 5])] // First point eval
                             : point_indicator == 2
                             ? regs[main_spline_reg_index + 3] // Second point eval
                             : regs[main_spline_reg_index + 2]); // Double point eval
@@ -468,147 +511,105 @@ void main() {
             }
             case OP_BLEND_DENSITY:
             case OP_CACHE_ALL_IN_CELL:
-                regs[result_index] = get_arg(pc, 0);
+                if (int(frames[pc].const_index) < 0)
+                    break;
+                regs[result_index] = get_arg(pc, 0, regs);
                 break;
             case OP_INTERPOLATED: {
                 int const_index = int(frames[pc].const_index);
                 if (const_index >= 0 && stage != STAGE_COMPUTE_CACHES)
                     break;
-                // If x in chunk is 0 and current x is not chunk origin x
-                // then sample must be past end of chunk
-                uint curr_x_in_chunk = uint(pos_mod(x, 16));
-                uint curr_x_cell = curr_x_in_chunk == 0 && x != coords.x
-                    ? horiz_cells : curr_x_in_chunk / CELL_WIDTH;
-                uint curr_y_cell = uint(y - coords.y) / CELL_HEIGHT;
-                uint curr_z_in_chunk = uint(pos_mod(z, 16));
-                uint curr_z_cell = curr_z_in_chunk == 0 && z != coords.z
-                    ? horiz_cells : curr_z_in_chunk / CELL_WIDTH;
-                uint base_cell_index = (uint(frames[pc].arg_indexes[const_index < 0 ? 0 : 1])
+                uint base_cell_index = (uint(frames[pc].arg_indexes[1])
                     * xz_samples * xz_samples * y_samples)
-                    + (curr_y_cell * xz_samples * xz_samples)
-                    + (curr_z_cell * xz_samples) + curr_x_cell;
+                    + (y_cell * xz_samples * xz_samples)
+                    + (z_cell * xz_samples) + x_cell;
                 if (stage == STAGE_COMPUTE_CACHES) {
                     if (const_index < 0)
                         break;
-                    interp[base_cell_index] = get_arg(pc, 0);
-                    pc = interp_pc_index < INTERP_LEN - 1
-                        ? int(interp_indexes[++interp_pc_index])
+                    interp[base_cell_index] = get_arg(pc, 0, regs);
+                    pc = precomp_pc_index < PRECOMP_LEN - 1
+                        ? int(precomp_indexes[++precomp_pc_index])
                         : 0;
                     break;
                 }
                 if (const_index < 0) {
                     uint interp_index = uint(frames[pc].arg_indexes[0]);
                     // If eval coord is sample point
-                    if (y % int(CELL_HEIGHT) == 0 && x % int(CELL_WIDTH) == 0 && z % int(CELL_WIDTH) == 0) {
+                    if (y_cell_block == 0 && x_cell_block == 0 && z_cell_block == 0) {
                         regs[result_index] = interp[base_cell_index];
                     } else {
-                        uint s000 = base_cell_index;
-                        uint s100 = base_cell_index + 1;
-                        uint s001 = base_cell_index + xz_samples;
-                        uint s101 = base_cell_index + xz_samples + 1;
-                        uint s010 = base_cell_index + (xz_samples * xz_samples);
-                        uint s110 = base_cell_index + (xz_samples * xz_samples) + 1;
-                        uint s011 = base_cell_index + (xz_samples * xz_samples) + xz_samples;
-                        uint s111 = base_cell_index + (xz_samples * xz_samples) + xz_samples + 1;
-                        fp_t cell_pos_x = fp_t(x) / CELL_WIDTH;
-                        fp_t cell_pos_y = fp_t(y) / CELL_HEIGHT;
-                        fp_t cell_pos_z = fp_t(z) / CELL_WIDTH;
-                        fp_t pos_x = cell_pos_x - floor(cell_pos_x);
-                        fp_t pos_y = cell_pos_y - floor(cell_pos_y);
-                        fp_t pos_z = cell_pos_z - floor(cell_pos_z);
-                        fp_t x00 = mix(interp[s000], interp[s100], pos_x);
-                        fp_t x01 = mix(interp[s001], interp[s101], pos_x);
-                        fp_t x10 = mix(interp[s010], interp[s110], pos_x);
-                        fp_t x11 = mix(interp[s011], interp[s111], pos_x);
-                        fp_t z0 = mix(x00, x01, pos_z);
-                        fp_t z1 = mix(x10, x11, pos_z);
-                        regs[result_index] = mix(z0, z1, pos_y);
+                        fp_t pos_x = fp_t(x_cell_block) / CELL_WIDTH;
+                        fp_t pos_y = fp_t(y_cell_block) / CELL_HEIGHT;
+                        fp_t pos_z = fp_t(z_cell_block) / CELL_WIDTH;
+                        uint sy = xz_samples * xz_samples;
+                        uint sz = xz_samples;
+                        vec4 x0 = vec4(
+                            interp[base_cell_index], interp[base_cell_index + sz],
+                            interp[base_cell_index + sy], interp[base_cell_index + sy + sz]
+                        );
+                        vec4 x1 = vec4(
+                            interp[base_cell_index + 1], interp[base_cell_index + sz + 1],
+                            interp[base_cell_index + sy + 1], interp[base_cell_index + sy + sz + 1]
+                        );
+                        vec4 x = mix(x0, x1, pos_x);
+                        regs[result_index] = mix(
+                            mix(x.x, x.y, pos_z),
+                            mix(x.z, x.w, pos_z),
+                            pos_y
+                        );
                     }
                     pc = ~const_index;
                 }
                 break;
             }
             case OP_CACHE_ONCE: {
-                if (x != x_actual || y != y_actual || z != z_actual) {
-                    regs[result_index] = get_arg(pc, 0);
-                    break;
-                }
                 int const_index = int(frames[pc].const_index);
+                uint cache_index = uint(frames[pc].arg_indexes[1]);
                 if (const_index < 0) {
-                    int cache_index = int(frames[pc].arg_indexes[0]);
-                    fp_t value = cache_once[local_index * CACHE_ONCE_LEN + cache_index];
+                    fp_t value = cache_once[cache_index];
                     if (!isnan(value)) {
                         regs[result_index] = value;
                         pc = ~frames[pc].const_index;
                     }
                 } else {
-                    int cache_index = int(frames[pc].const_index);
-                    fp_t value = get_arg(pc, 0);
-                    cache_once[local_index * CACHE_ONCE_LEN + cache_index] = value;
-                    barrier();
+                    fp_t value = get_arg(pc, 0, regs);
+                    cache_once[cache_index] = value;
                     regs[result_index] = value;
                 }
                 break;
             }
             case OP_FLAT_CACHE: {
                 int const_index = int(frames[pc].const_index);
-                if (stage == STAGE_COMPUTE_CACHES) {
-                    if (const_index < 0)
-                        break;
-                    regs[result_index] = get_arg(pc, 0);
-                    break;
-                }
-                uint curr_x_in_chunk = uint(pos_mod(x, 16));
-                uint curr_x_cell = curr_x_in_chunk == 0 && x != coords.x
-                    ? horiz_cells : curr_x_in_chunk / CELL_WIDTH;
-                uint curr_z_in_chunk = uint(pos_mod(z, 16));
-                uint curr_z_cell = curr_z_in_chunk == 0 && z != coords.z
-                    ? horiz_cells : curr_z_in_chunk / CELL_WIDTH;
+                uint cache_index = uint(frames[pc].arg_indexes[1]) * xz_samples * xz_samples
+                    + z_cell * xz_samples + x_cell;
                 if (const_index < 0) {
-                    int cache_index = int(frames[pc].arg_indexes[0]);
-                    fp_t value = cache_flat[curr_z_cell * xz_samples * CACHE_FLAT_LEN + curr_x_cell * CACHE_FLAT_LEN + cache_index];
-                    if (isnan(value)) {
-                        temp_x = x;
-                        temp_y = y;
-                        temp_z = z;
-                        x -= pos_mod(x, int(CELL_WIDTH));
-                        y = 0;
-                        z -= pos_mod(z, int(CELL_WIDTH));
-                    } else {
+                    fp_t value = cache_flat[cache_index];
+                    if (!isnan(value)) {
                         regs[result_index] = value;
                         pc = ~frames[pc].const_index;
                     }
                 } else {
-                    int cache_index = int(frames[pc].const_index);
-                    fp_t value = get_arg(pc, 0);
-                    cache_flat[curr_z_cell * xz_samples * CACHE_FLAT_LEN + curr_x_cell * CACHE_FLAT_LEN + cache_index] = value;
-                    x = temp_x;
-                    y = temp_y;
-                    z = temp_z;
+                    fp_t value = get_arg(pc, 0, regs);
+                    cache_flat[cache_index] = value;
                     regs[result_index] = value;
                 }
                 break;
             }
             case OP_CACHE_2D: {
                 int const_index = int(frames[pc].const_index);
-                uint curr_x_in_chunk = uint(pos_mod(x, 16));
-                curr_x_in_chunk = curr_x_in_chunk == 0 && x != coords.x
-                    ? 16 : curr_x_in_chunk;
-                uint curr_z_in_chunk = uint(pos_mod(z, 16));
-                curr_z_in_chunk = curr_z_in_chunk == 0 && z != coords.z
-                    ? 16 : curr_z_in_chunk;
-                //uint chunk_block_index = (curr_z_in_chunk * 17u + curr_x_in_chunk) * CACHE_2D_LEN;
+                uint curr_x_in_chunk = x - coords.x;
+                uint curr_z_in_chunk = z - coords.z;
+                uint cache_index = uint(frames[pc].arg_indexes[1]) * (width+1) * (width+1)
+                    + curr_z_in_chunk * (width+1) + curr_x_in_chunk;
                 if (const_index < 0) {
-                    int cache_index = frames[pc].arg_indexes[0];
-                    fp_t value = cache_2d[cache_index * 17u * 17u + curr_z_in_chunk * 17u + curr_x_in_chunk];
+                    fp_t value = cache_2d[cache_index];
                     if (!isnan(value)) {
                         regs[result_index] = value;
                         pc = ~const_index;
                     }
                 } else {
-                    int cache_index = const_index;
-                    fp_t value = get_arg(pc, 0);
-                    cache_2d[cache_index * 17u * 17u + curr_z_in_chunk * 17u + curr_x_in_chunk] = value;
+                    fp_t value = get_arg(pc, 0, regs);
+                    cache_2d[cache_index] = value;
                     regs[result_index] = value;
                 }
                 break;
@@ -617,71 +618,100 @@ void main() {
                 regs[result_index] = 0.0;
                 break;
             case OP_BLEND_ALPHA:
-            case OP_END_ISLANDS:
                 regs[result_index] = 1.0;
                 break;
-            case OP_SHIFT_A:
+            case OP_END_ISLANDS: {
+                int x_section = x >> 3;
+                int z_section = z >> 3;
+                int x_sub_section = x_section % 2;
+                int z_sub_section = z_section % 2;
+                int chunk_x_coord = x >> 4;
+                int chunk_z_coord = z >> 4;
+                fp_t doffs = 100.0 - sqrt(fp_t(x_section * x_section + z_section * z_section)) * 8.0;
+                doffs = min(max(doffs, -100.0), 80.0);
+                for (int i = -12; i <= 12; i++) {
+                    for (int j = -12; j <= 12; j++) {
+                        int64_t cx = chunk_x_coord + i;
+                        int64_t cz = chunk_z_coord + j;
+                        if (cx * cx + cz * cz > 4096 && generate_simplex_noise(int(cx), int(cz)) < -0.9) {
+                            fp_t isize = fp_mod(fp_t(cx) * 3439.0 + fp_t(cz) * 147.0, 13.0) + 9.0;
+                            fp_t xd = fp_t(x_sub_section) - fp_t(i) * 2.0;
+                            fp_t zd = fp_t(z_sub_section) - fp_t(j) * 2.0;
+                            fp_t doffs_val = 100.0 - sqrt(xd * xd + zd * zd) * isize;
+                            doffs_val = min(max(doffs_val, -100.0), 80.0);
+                            doffs = max(doffs, doffs_val);
+                        }
+                    }
+                }
+                regs[result_index] = (doffs - 8.0) / 128.0;
+                break;
+            }
+            case OP_SHIFT_A: {
+                int noise_index = int(get_const(pc, 0));
                 regs[result_index] = 4.0 * fp_t(generate_normal_noise(
-                    int(get_const(pc, 0)),
-                    double(x) * 0.25,
+                    noise_index,
+                    fp_t(x) * 0.25,
                     0.0,
-                    double(z) * 0.25
+                    fp_t(z) * 0.25
                 ));
                 break;
-            case OP_SHIFT_B:
+            }
+            case OP_SHIFT_B: {
+                int noise_index = int(get_const(pc, 0));
                 regs[result_index] = 4.0 * fp_t(generate_normal_noise(
-                    int(get_const(pc, 0)),
-                    double(z) * 0.25,
-                    double(x) * 0.25,
+                    noise_index,
+                    fp_t(z) * 0.25,
+                    fp_t(x) * 0.25,
                     0.0
                 ));
                 break;
+            }
             case OP_OLD_BLENDED_NOISE: {
                 double smear_scale_mult = get_const(pc, 0);
                 double xz_factor = get_const(pc, 1);
                 double xz_scale = get_const(pc, 2) * 684.412;
                 double y_factor = get_const(pc, 3);
                 double y_scale = get_const(pc, 4) * 684.412;
-                double block_x_mul = double(x) * xz_scale;
-                double block_y_mul = double(y) * y_scale;
-                double block_z_mul = double(z) * xz_scale;
+                fp_t block_x_mul = fp_t(x * xz_scale);
+                fp_t block_y_mul = fp_t(y * y_scale);
+                fp_t block_z_mul = fp_t(z * xz_scale);
                 double block_x_fact = block_x_mul / xz_factor;
-                double block_y_fact = block_y_mul / y_factor;
+                fp_t block_y_fact = fp_t(block_y_mul / y_factor);
                 double block_z_fact = block_z_mul / xz_factor;
-                double y_smear = y_scale * smear_scale_mult;
-                double y_smear_factor = y_smear / y_factor;
+                fp_t y_smear = fp_t(y_scale * smear_scale_mult);
+                fp_t y_smear_factor = fp_t(y_smear / y_factor);
 
-                double noise_acc = 0.0;
-                double acc = 1.0;
+                fp_t noise_acc = 0.0;
+                fp_t acc = 1.0;
                 int n_index = noise_states.length() - 1;
                 int main_noise_index = int(noise_states[n_index].noises[1].levels_index)
-                    + int(noise_states[n_index].noises[1].levels_count);
+                    + int(noise_states[n_index].noises[1].levels_count) - 1;
                 for (int i = 0; i < 8; i++) {
-                    int level_index = main_noise_index - i - 1;
+                    int level_index = main_noise_index - i;
                     noise_acc += generate_improved_noise(
                         level_index,
-                        wrap(block_x_fact * acc),
-                        wrap(block_y_fact * acc),
-                        wrap(block_z_fact * acc),
+                        fp_t(wrap(block_x_fact * acc)),
+                        fp_t(wrap(block_y_fact * acc)),
+                        fp_t(wrap(block_z_fact * acc)),
                         y_smear_factor * acc,
                         block_y_fact * acc
                     ) / acc;
                     acc *= 0.5;
                 }
 
-                double noise_result = (1.0 + (noise_acc * 0.1)) * 0.5;
-                double min_noise_acc = 0.0;
-                double max_noise_acc = 0.0;
+                fp_t noise_result = (1.0 + (noise_acc * 0.1)) * 0.5;
+                fp_t min_noise_acc = 0.0;
+                fp_t max_noise_acc = 0.0;
                 acc = 1.0;
                 int limit_noise_index = int(noise_states[n_index].noises[0].levels_index)
-                    + int(noise_states[n_index].noises[0].levels_count);
+                    + int(noise_states[n_index].noises[0].levels_count) - 1;
                 for (int i = 0; i < 16; i++) {
-                    double block_x_wrap = wrap(block_x_mul * acc);
-                    double block_y_wrap = wrap(block_y_mul * acc);
-                    double block_z_wrap = wrap(block_z_mul * acc);
-                    double y_smear_adj = y_smear * acc;
-                    double block_y_adj = block_y_mul * acc;
-                    int level_index = limit_noise_index - i - 1;
+                    fp_t block_x_wrap = fp_t(wrap(block_x_mul * acc));
+                    fp_t block_y_wrap = fp_t(wrap(block_y_mul * acc));
+                    fp_t block_z_wrap = fp_t(wrap(block_z_mul * acc));
+                    fp_t y_smear_adj = y_smear * acc;
+                    fp_t block_y_adj = block_y_mul * acc;
+                    int level_index = limit_noise_index - i;
                     if (!(noise_result <= 0.0)) {
                         max_noise_acc += generate_improved_noise(
                             level_index,
@@ -704,51 +734,45 @@ void main() {
                     }
                     acc *= 0.5;
                 }
-                double final_result;
-                if (noise_result < 0.0) {
-                    final_result = min_noise_acc / double(1 << 16);
-                } else if (noise_result > 1.0) {
-                    final_result = max_noise_acc / double(1 << 16);
-                } else {
-                    final_result = mix(min_noise_acc / 512.0, max_noise_acc / 512.0, noise_result) / 128.0;
-                }
-                regs[result_index] = fp_t(final_result);
+                regs[result_index] = mix(
+                    min_noise_acc,
+                    max_noise_acc,
+                    clamp(noise_result, 0.0, 1.0)
+                ) / 65536.0;
                 break;
             }
             default:
                 break;
         }
     }
-    buf_out[(y_base * 256) + (z_base * 16) + x_base] = regs[local_index * REGISTERS];
+    if (stage == STAGE_COMPUTE_CACHES)
+        return;
+    buf_out[output_index] = regs[0];
 }
 
-/*double lerp(double pos, double x0, double x1) {
-    return x0 + (pos * (x1 - x0));
-}*/
-
-double lerp2(
-    double pos1,
-    double pos2,
-    double x0,
-    double x1,
-    double y0,
-    double y1
+fp_t lerp2(
+    fp_t pos1,
+    fp_t pos2,
+    fp_t x0,
+    fp_t x1,
+    fp_t y0,
+    fp_t y1
 ) {
     return mix(mix(x0, x1, pos1), mix(y0, y1, pos1), pos2);
 }
 
-double lerp3(
-    double pos1,
-    double pos2,
-    double pos3,
-    double x00,
-    double x10,
-    double y00,
-    double y10,
-    double x01,
-    double x11,
-    double y01,
-    double y11
+fp_t lerp3(
+    fp_t pos1,
+    fp_t pos2,
+    fp_t pos3,
+    fp_t x00,
+    fp_t x10,
+    fp_t y00,
+    fp_t y10,
+    fp_t x01,
+    fp_t x11,
+    fp_t y01,
+    fp_t y11
 ) {
     return mix(lerp2(pos1, pos2, x00, x10, y00, y10), lerp2(pos1, pos2, x01, x11, y01, y11), pos3);
 }
@@ -757,7 +781,7 @@ fp_t inverse_lerp(fp_t pos, fp_t x, fp_t y) {
     return (pos - x) / (y - x);
 }
 
-double smoothstep(double val) {
+fp_t smoothstep(fp_t val) {
     return val * val * val * (val * (val * 6.0 - 15.0) + 10.0);
 }
 
@@ -820,71 +844,84 @@ const Gradient SIMPLEX_GRADIENT[16] = {
     { 0, -1, -1}
 };
 
-int get_level_value(int level_index, int value) {
-    return noise_levels[level_index].values[value];
+fp_t grad_dot(int h, fp_t x, fp_t y, fp_t z) {
+    switch (h & 0xF) {
+        case 0:
+        case 12: return x + y;
+        case 1:
+        case 14: return -x + y;
+        case 2: return x - y;
+        case 3: return -x - y;
+
+        case 4: return x + z;
+        case 5: return -x + z;
+        case 6: return x - z;
+        case 7: return -x - z;
+
+        case 8: return y + z;
+        case 9:
+        case 13: return -y + z;
+        case 10: return y - z;
+        case 11:
+        case 15: return -y - z;
+    }
 }
 
-double sample_plus_lerp(
+fp_t sample_plus_lerp(
     int level_index,
     int x,
     int y,
     int z,
-    double x_real,
-    double y_real,
-    double z_real,
-    double y_real_offset
+    fp_t x_real,
+    fp_t y_real,
+    fp_t z_real,
+    fp_t y_real_offset
 ) {
-    int x0 = get_level_value(level_index, x);
-    int x1 = get_level_value(level_index, x + 1);
-    int xy00 = get_level_value(level_index, x0 + y);
-    int xy01 = get_level_value(level_index, x0 + y + 1);
-    int xy10 = get_level_value(level_index, x1 + y);
-    int xy11 = get_level_value(level_index, x1 + y + 1);
+    int a0 = noise_levels[level_index].values[x];
+    int a1 = noise_levels[level_index].values[x + 1];
 
-    int xyz000 = get_level_value(level_index, xy00 + z) & 0xF;
-    int xyz100 = get_level_value(level_index, xy10 + z) & 0xF;
-    int xyz010 = get_level_value(level_index, xy01 + z) & 0xF;
-    int xyz110 = get_level_value(level_index, xy11 + z) & 0xF;
-    int xyz001 = get_level_value(level_index, xy00 + z + 1) & 0xF;
-    int xyz101 = get_level_value(level_index, xy10 + z + 1) & 0xF;
-    int xyz011 = get_level_value(level_index, xy01 + z + 1) & 0xF;
-    int xyz111 = get_level_value(level_index, xy11 + z + 1) & 0xF;
+    int b0 = a0 + y;
+    int b1 = a1 + y;
+    int c00 = noise_levels[level_index].values[b0];
+    int c01 = noise_levels[level_index].values[b0 + 1];
+    int c10 = noise_levels[level_index].values[b1];
+    int c11 = noise_levels[level_index].values[b1 + 1];
 
-    double x_real1 = x_real - 1.0;
-    double y_real1 = y_real_offset - 1.0;
-    double z_real1 = z_real - 1.0;
-    Gradient s000 = SIMPLEX_GRADIENT[xyz000];
-    double d000 = s000.x * x_real
-                + s000.y * y_real_offset
-                + s000.z * z_real;
-    Gradient s100 = SIMPLEX_GRADIENT[xyz100];
-    double d100 = s100.x * x_real1
-                + s100.y * y_real_offset
-                + s100.z * z_real;
-    Gradient s010 = SIMPLEX_GRADIENT[xyz010];
-    double d010 = s010.x * x_real
-                + s010.y * y_real1
-                + s010.z * z_real;
-    Gradient s110 = SIMPLEX_GRADIENT[xyz110];
-    double d110 = s110.x * x_real1
-                + s110.y * y_real1
-                + s110.z * z_real;
-    Gradient s001 = SIMPLEX_GRADIENT[xyz001];
-    double d001 = s001.x * x_real
-                + s001.y * y_real_offset
-                + s001.z * z_real1;
-    Gradient s101 = SIMPLEX_GRADIENT[xyz101];
-    double d101 = s101.x * x_real1
-                + s101.y * y_real_offset
-                + s101.z * z_real1;
-    Gradient s011 = SIMPLEX_GRADIENT[xyz011];
-    double d011 = s011.x * x_real
-                + s011.y * y_real1
-                + s011.z * z_real1;
-    Gradient s111 = SIMPLEX_GRADIENT[xyz111];
-    double d111 = s111.x * x_real1
-                + s111.y * y_real1
-                + s111.z * z_real1;
+    int xy00 = c00 + z;
+    int xy01 = c01 + z;
+    int xy10 = c10 + z;
+    int xy11 = c11 + z;
+    int xyz000 = noise_levels[level_index].values[xy00];
+    int xyz001 = noise_levels[level_index].values[xy00 + 1];
+
+    int xyz010 = noise_levels[level_index].values[xy01];
+    int xyz011 = noise_levels[level_index].values[xy01 + 1];
+
+    int xyz100 = noise_levels[level_index].values[xy10];
+    int xyz101 = noise_levels[level_index].values[xy10 + 1];
+
+    int xyz110 = noise_levels[level_index].values[xy11];
+    int xyz111 = noise_levels[level_index].values[xy11 + 1];
+
+    fp_t x_real1 = x_real - 1.0;
+    fp_t y_real1 = y_real_offset - 1.0;
+    fp_t z_real1 = z_real - 1.0;
+    Gradient s000 = SIMPLEX_GRADIENT[xyz000 & 0xF];
+    fp_t d000 = s000.x * x_real + s000.y * y_real_offset + s000.z * z_real;
+    Gradient s100 = SIMPLEX_GRADIENT[xyz100 & 0xF];
+    fp_t d100 = s100.x * x_real1 + s100.y * y_real_offset + s100.z * z_real;
+    Gradient s010 = SIMPLEX_GRADIENT[xyz010 & 0xF];
+    fp_t d010 = s010.x * x_real + s010.y * y_real1 + s010.z * z_real;
+    Gradient s110 = SIMPLEX_GRADIENT[xyz110 & 0xF];
+    fp_t d110 = s110.x * x_real1 + s110.y * y_real1 + s110.z * z_real;
+    Gradient s001 = SIMPLEX_GRADIENT[xyz001 & 0xF];
+    fp_t d001 = s001.x * x_real + s001.y * y_real_offset + s001.z * z_real1;
+    Gradient s101 = SIMPLEX_GRADIENT[xyz101 & 0xF];
+    fp_t d101 = s101.x * x_real1 + s101.y * y_real_offset + s101.z * z_real1;
+    Gradient s011 = SIMPLEX_GRADIENT[xyz011 & 0xF];
+    fp_t d011 = s011.x * x_real + s011.y * y_real1 + s011.z * z_real1;
+    Gradient s111 = SIMPLEX_GRADIENT[xyz111 & 0xF];
+    fp_t d111 = s111.x * x_real1 + s111.y * y_real1 + s111.z * z_real1;
 
     return lerp3(
         smoothstep(x_real),
@@ -901,26 +938,26 @@ double sample_plus_lerp(
     );
 }
 
-double generate_improved_noise(
+fp_t generate_improved_noise(
     int level_index,
-    double x,
-    double y,
-    double z,
-    double val1,
-    double val2
+    fp_t x,
+    fp_t y,
+    fp_t z,
+    fp_t val1,
+    fp_t val2
 ) {
-    x += noise_levels[level_index].x;
-    y += noise_levels[level_index].y;
-    z += noise_levels[level_index].z;
+    x += fp_t(noise_levels[level_index].x);
+    y += fp_t(noise_levels[level_index].y);
+    z += fp_t(noise_levels[level_index].z);
     int x_floor = int(floor(x));
     int y_floor = int(floor(y));
     int z_floor = int(floor(z));
     x -= x_floor;
     y -= y_floor;
     z -= z_floor;
-    double y_offset = y;
+    fp_t y_offset = y;
     if (val1 != 0.0) {
-        double val = val2 >= 0.0 && val2 < y ? val2 : y;
+        fp_t val = val2 >= 0.0 && val2 < y ? val2 : y;
         y_offset -= val1 * floor((val / val1) + 1.0e-7F);
     }
     return sample_plus_lerp(
@@ -932,21 +969,21 @@ double generate_improved_noise(
     );
 }
 
-double generate_perlin_noise(PerlinNoise noise, double x, double y, double z) {
-    double value = 0.0;
-    double input_factor = noise.lowest_freq_input_factor;
-    double value_factor = noise.lowest_freq_value_factor;
+fp_t generate_perlin_noise(PerlinNoise noise, fp_t x, fp_t y, fp_t z) {
+    fp_t value = 0.0;
+    fp_t input_factor = fp_t(noise.lowest_freq_input_factor);
+    fp_t value_factor = fp_t(noise.lowest_freq_value_factor);
     int levels_count = int(noise.levels_count);
     int noise_levels_index = int(noise.levels_index);
     for (int i = 0; i < levels_count; i++) {
         int level_index = noise_levels_index + i;
         if (noise_levels[level_index].disabled == 0) {
-            value += noise_levels[level_index].amplitude
+            value += fp_t(noise_levels[level_index].amplitude)
                 * generate_improved_noise(
                     level_index,
-                    wrap(x * input_factor),
-                    wrap(y * input_factor),
-                    wrap(z * input_factor),
+                    fp_t(wrap(x * input_factor)),
+                    fp_t(wrap(y * input_factor)),
+                    fp_t(wrap(z * input_factor)),
                     0.0, 0.0
                 ) * value_factor;
         }
@@ -956,7 +993,7 @@ double generate_perlin_noise(PerlinNoise noise, double x, double y, double z) {
     return value;
 }
 
-double generate_normal_noise(int noise_index, double x, double y, double z) {
+fp_t generate_normal_noise(int noise_index, fp_t x, fp_t y, fp_t z) {
     return (
         generate_perlin_noise(noise_states[noise_index].noises[0], x, y, z)
         + generate_perlin_noise(
@@ -965,5 +1002,37 @@ double generate_normal_noise(int noise_index, double x, double y, double z) {
             y * 1.0181268882175227,
             z * 1.0181268882175227
         )
-    ) * noise_states[noise_index].value_factor;
+    ) * fp_t(noise_states[noise_index].value_factor);
+}
+
+fp_t get_corner_noise(int idx, fp_t x, fp_t y, fp_t z) {
+    fp_t val = 0.5 - x * x - y * y - z * z;
+    return val < 0.0
+        ? 0.0
+        : (val * val) * (val * val) * grad_dot(idx, x, y, z);
+}
+
+fp_t generate_simplex_noise(fp_t x, fp_t y) {
+    fp_t xy_val = (x + y) * (0.5 * (sqrt(3.0) - 1.0));
+    int i = int(floor(x + xy_val));
+    int j = int(floor(y + xy_val));
+    fp_t g = (3.0 - sqrt(3.0)) / 6.0;
+    fp_t ij_val = (i + j) * g;
+    fp_t x0 = x - (i - ij_val);
+    fp_t y0 = y - (j - ij_val);
+    int io = x0 > y0 ? 1 : 0;
+    int jo = x0 > y0 ? 0 : 1;
+    fp_t x1 = x0 - io + g;
+    fp_t y1 = y0 - jo + g;
+    fp_t x2 = x0 - 1.0 + 2.0 * g;
+    fp_t y2 = y0 - 1.0 + 2.0 * g;
+    i &= 0xFF;
+    j &= 0xFF;
+    int idx0 = SIMPLEX_END_ISLANDS.values[(i + SIMPLEX_END_ISLANDS.values[j & 0xFF]) & 0xFF] % 12;
+    int idx1 = SIMPLEX_END_ISLANDS.values[(i + io + SIMPLEX_END_ISLANDS.values[(j + jo) & 0xFF]) & 0xFF] % 12;
+    int idx2 = SIMPLEX_END_ISLANDS.values[(i + 1 + SIMPLEX_END_ISLANDS.values[(j + 1) & 0xFF]) & 0xFF] % 12;
+    fp_t noise0 = get_corner_noise(idx0, x0, y0, 0.0);
+    fp_t noise1 = get_corner_noise(idx1, x1, y1, 0.0);
+    fp_t noise2 = get_corner_noise(idx2, x2, y2, 0.0);
+    return 70.0 * (noise0 + noise1 + noise2);
 }

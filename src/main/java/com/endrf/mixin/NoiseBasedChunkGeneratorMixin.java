@@ -4,6 +4,8 @@ import com.endrf.LudiGen;
 import com.endrf.NoiseChunkAccess;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.WorldGenRegion;
 import net.minecraft.util.Mth;
 import net.minecraft.util.Util;
 import net.minecraft.world.level.ChunkPos;
@@ -23,6 +25,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.DoubleBuffer;
+import java.nio.FloatBuffer;
 import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
@@ -76,12 +79,12 @@ public abstract class NoiseBasedChunkGeneratorMixin {
 
             ChunkPos pos = centerChunk.getPos();
             NoiseChunk noiseChunk = centerChunk.getOrCreateNoiseChunk(chunk -> this.createNoiseChunk(centerChunk, structureManager, blender, randomState));
-            Aquifer aquifer;
-            if (!this.settings.value().isAquifersEnabled()) {
+            Aquifer aquifer = noiseChunk.aquifer();
+            /*if (!this.settings.value().isAquifersEnabled()) {
                 aquifer = Aquifer.createDisabled(this.globalFluidPicker.get());
             } else {
                 aquifer = Aquifer.create(noiseChunk, pos, this.settings.value().noiseRouter(), randomState.aquiferRandom(), noiseSettings.minY(), noiseSettings.height(), globalFluidPicker.get());
-            }
+            }*/
             NoiseChunk.BlockStateFiller veinifier = null;
             if (this.settings.value().oreVeinsEnabled()) {
                 veinifier = OreVeinifier.create(this.settings.value().noiseRouter().veinToggle(), this.settings.value().noiseRouter().veinRidged(), this.settings.value().noiseRouter().veinGap(), randomState.oreRandom());
@@ -89,10 +92,21 @@ public abstract class NoiseBasedChunkGeneratorMixin {
 
             Beardifier beardifier = Beardifier.forStructuresInChunk(structureManager, pos);
 
-            //double[] densities = new double[noiseSettings.height() * 16 * 16];
-            ByteBuffer densities_buf = LudiGen.instance.fillNoiseAccel(minY, noiseSettings.height(), noiseSettings.getCellWidth(), noiseSettings.getCellHeight(), pos.getMinBlockX(), pos.getMinBlockZ());
+            WorldGenRegion region = null;
+            if (structureManager.level instanceof WorldGenRegion reg) {
+                region = reg;
+            }
+            if (region == null) {
+                return centerChunk;
+            }
+
+            int[] retData = new int[1];
+            long startTime = System.nanoTime();
+            ByteBuffer densities_buf = LudiGen.instance.fillNoiseAccel(region.level.dimension().identifier().getPath(), pos.getMinBlockX(), pos.getMinBlockZ(), retData);
             densities_buf.order(ByteOrder.nativeOrder());
-            DoubleBuffer densities = densities_buf.asDoubleBuffer();
+            FloatBuffer densities = densities_buf.asFloatBuffer();
+            long endTime = System.nanoTime();
+            //System.out.println("noise gen time: " + (endTime - startTime));
             Heightmap oceanFloor = centerChunk.getOrCreateHeightmapUnprimed(Heightmap.Types.OCEAN_FLOOR_WG);
             Heightmap worldSurface = centerChunk.getOrCreateHeightmapUnprimed(Heightmap.Types.WORLD_SURFACE_WG);
             BlockPos.MutableBlockPos blockPos = new BlockPos.MutableBlockPos();
@@ -119,6 +133,7 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                     return pos.getMinBlockZ() + z;
                 }
             };
+            startTime = System.nanoTime();
             for (LevelChunkSection section : sections) {
                 for (int yInSection = 15; yInSection >= 0; yInSection--, yInChunk--, yIndex--) {
                     for (int zInChunk = 0; zInChunk < 16; zInChunk++) {
@@ -127,8 +142,8 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                             context.y = yInChunk;
                             context.z = zInChunk;
                             //double density = LudiGen.instance.evalDensityFunction(pos.getMinBlockX() + xInChunk, yInChunk, pos.getMinBlockZ() + zInChunk);
-                            double density = densities.get((yIndex * 256) + (zInChunk * 16) + xInChunk)
-                                    + beardifier.compute(context);
+                            float density = densities.get((yIndex * 256) + (zInChunk * 16) + xInChunk)
+                                    + (float)beardifier.compute(context);
                             BlockState state = aquifer.computeSubstance(context, density);
                             if (state == null && veinifier != null) {
                                 state = veinifier.calculate(context);
@@ -155,7 +170,9 @@ public abstract class NoiseBasedChunkGeneratorMixin {
                     }
                 }
             }
-            LudiGen.instance.releaseDensities();
+            endTime = System.nanoTime();
+            //System.out.println("iter time: " + (endTime - startTime));
+            LudiGen.instance.releaseDensities(densities_buf, retData[0]);
 
             for (LevelChunkSection s : sections) {
                 s.release();

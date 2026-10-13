@@ -3,6 +3,7 @@ package com.endrf.mixin;
 import com.endrf.LudiGen;
 import net.minecraft.server.level.GenerationChunkHolder;
 import net.minecraft.util.StaticCache2D;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.chunk.ChunkAccess;
 import net.minecraft.world.level.chunk.status.*;
 import org.spongepowered.asm.mixin.Final;
@@ -15,6 +16,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.time.Instant;
 import java.time.LocalTime;
+import java.util.HashMap;
 import java.util.concurrent.CompletableFuture;
 
 @Mixin(ChunkPyramid.class)
@@ -58,14 +60,18 @@ public class ChunkPyramidMixin {
                                 .addRequirement(ChunkStatus.BIOMES, 1)
                                 .blockStateWriteRadius(0)
                                 .setTask((WorldGenContext context, ChunkStep step, StaticCache2D<GenerationChunkHolder> chunks, ChunkAccess chunk) -> {
-                                    //long startTime = System.nanoTime();
+                                    long startTime = System.nanoTime();
                                     //Instant instant = Instant.now();
                                     //long startTime = instant.getEpochSecond() * 1_000_000_000L + instant.getNano();
                                     CompletableFuture<ChunkAccess> chunkFut = ChunkStatusTasks.generateNoise(context, step, chunks, chunk);
                                     chunkFut.join();
                                     //instant = Instant.now();
                                     //long endTime = instant.getEpochSecond() * 1_000_000_000L + instant.getNano();
-                                    //long endTime = System.nanoTime();
+                                    long endTime = System.nanoTime();
+                                    LudiGen.totalChunks++;
+                                    LudiGen.totalTime = LudiGen.totalTime + ((endTime - startTime) - LudiGen.totalTime) / LudiGen.totalChunks;
+
+                                    System.out.println("Average Chunk Noise Time: " + LudiGen.totalTime);
                                     //System.out.println(endTime - startTime);
                                     return chunkFut;
                                 })

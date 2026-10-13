@@ -2,7 +2,6 @@ package com.endrf.operations;
 
 import com.google.gson.*;
 import java.lang.reflect.Type;
-import java.util.HashSet;
 
 public class OperationDeserializer implements JsonDeserializer<OperationArg> {
 
@@ -18,23 +17,6 @@ public class OperationDeserializer implements JsonDeserializer<OperationArg> {
 
         JsonObject obj = json.getAsJsonObject();
         String type = obj.get("type").getAsString();
-
-        /*switch (type) {
-            case Noise.TYPE, ShiftedNoise.TYPE -> {
-                String noise = obj.get("noise").getAsString();
-                if (!noiseTypes.contains(noise)) {
-                    noiseTypes.add(noise);
-                    System.out.println("noise: " + noise + " " + noiseTypes.size());
-                }
-            }
-            case ShiftA.TYPE, ShiftB.TYPE -> {
-                String noise = obj.get("argument").getAsString();
-                if (!noiseTypes.contains(noise)) {
-                    noiseTypes.add(noise);
-                    System.out.println("noise: " + noise + " " + noiseTypes.size());
-                }
-            }
-        }*/
         return switch (type) {
             case Add.TYPE -> context.deserialize(json, Add.class);
             case Mul.TYPE -> context.deserialize(json, Mul.class);

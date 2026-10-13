@@ -4,14 +4,14 @@ import java.util.Objects;
 
 public class ShiftedNoise implements OperationArg {
     public final static String TYPE = "minecraft:shifted_noise";
-    private final String type = TYPE;
+    private String type = TYPE;
 
-    private final String noise;
-    public final double xzScale;
-    public final double yScale;
-    public final OperationArg shiftX;
-    public final OperationArg shiftY;
-    public final OperationArg shiftZ;
+    private String noise;
+    public double xzScale;
+    public double yScale;
+    public OperationArg shiftX;
+    public OperationArg shiftY;
+    public OperationArg shiftZ;
 
     public ShiftedNoise(String noise, double xzScale, double yScale, OperationArg shiftX, OperationArg shiftY, OperationArg shiftZ) {
         this.noise = noise;

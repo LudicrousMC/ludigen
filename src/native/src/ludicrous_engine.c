@@ -1,12 +1,13 @@
 #include <vulkan/vulkan.h>
 #include <jni.h>
 #include <stdint.h>
+#include <inttypes.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <semaphore.h>
+#include "tinycthread.h"
 #include "ludicrous_engine.h"
 #include "op_stack.h"
 #include "op_types.h"
@@ -17,16 +18,19 @@
 #include "stack_builder.h"
 #include "noise_gen.h"
 #include "util.h"
+#include "eval.comp.h"
 
-#define VULKAN_VERSION VK_API_VERSION_1_0
-#define ELEMENT_COUNT 1024
-#define BUFFER_SIZE (ELEMENT_COUNT * sizeof(double))
+#define VULKAN_VERSION VK_API_VERSION_1_1
+
+static JavaVM* java_vm = NULL;
+JavaVM* get_java_vm() {
+    return java_vm;
+}
 
 // Usage: InstanceState* state = create_instance(VK_QUEUE_COMPUTE_BIT);
 static InstanceState* create_instance(int queueFamilyType) {
 
     // <-- Setup Vulkan Instance -->
-    // Create Vulkan instance with Vulkan API version 1.0
     VkInstance instance;
     VkResult err = vkCreateInstance(&(VkInstanceCreateInfo){
             .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
@@ -40,11 +44,29 @@ static InstanceState* create_instance(int queueFamilyType) {
 
     // <-- Get Physical Device -->
     // Query Physical devices (pick first)
-    VkPhysicalDevice physDev;
-    err = vkEnumeratePhysicalDevices(instance, &(uint32_t){1}, &physDev);
+    VkPhysicalDevice* physDevHdl = malloc(sizeof(VkPhysicalDevice) * 2);
+    err = vkEnumeratePhysicalDevices(instance, &(uint32_t){2}, physDevHdl);
     if (err < VK_SUCCESS)
         return NULL;
 
+    VkPhysicalDevice physDev = physDevHdl[0];
+    VkPhysicalDeviceIDProperties physDevIDProps = {0};
+    physDevIDProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+    physDevIDProps.pNext = NULL;
+    VkPhysicalDeviceProperties2 physDevProps2 = {0};
+    physDevProps2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    physDevProps2.pNext = &physDevIDProps;
+    char physDevUUID[VK_UUID_SIZE * 2 + 5]= {0};
+    vkGetPhysicalDeviceProperties2(physDev, &physDevProps2);
+    for (int i = 0, s = 0, uuid_pos = 0; i < VK_UUID_SIZE; i++, s += 2) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) {
+            physDevUUID[s] = '-';
+            s++;
+        }
+        uuid_pos += snprintf(&physDevUUID[s], sizeof(physDevUUID) - uuid_pos, "%02x", physDevIDProps.deviceUUID[i]);
+
+    }
+    log_info("Selected \"%s\" (ID=%s) as Primary GPU Device", physDevProps2.properties.deviceName, physDevUUID);
     // <-- Find Index of Queue Family Type in Physical Device -->
     uint32_t qfCount;
     // Get number of queue family properties
@@ -74,25 +96,107 @@ static InstanceState* create_instance(int queueFamilyType) {
                 .pQueuePriorities = &(float){1.0f},
             }
         }, NULL, &device);
-    if (err != VK_SUCCESS)
+    if (err != VK_SUCCESS) {
+        log_err("Error creating vulkan device. VK Code: %d", err);
         return NULL;
+    }
 
     // <-- Get Logical Device's Created Queue -->
     VkQueue queue;
     vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 
     InstanceState* state = (InstanceState*)malloc(sizeof(InstanceState));
+    if (state == NULL) {
+        log_err("Error during malloc for instance state");
+        return NULL;
+    }
+    int cache_map_size = 1 << 12; // 4096
+    int max_alloc_bytes = (sizeof(ChunkData) + sizeof(float) * 384 * 16 * 16) * cache_map_size;
+    log_info("Initializing chunk cache with capacity of %d chunks (max allocation: %d bytes)", cache_map_size, max_alloc_bytes);
+    CacheMap cache_map = { .chunks = calloc(cache_map_size, sizeof(ChunkData)) };
+    for (int i = 0; i < cache_map_size; i++) {
+        mtx_init(&cache_map.chunks[i].sem, mtx_plain);
+        cache_map.chunks[i].densities = NULL;
+    }
     *state = (InstanceState){
         .vk_instance = instance,
         .vk_phys_device = physDev,
         .vk_queue_family_index = queueFamilyIndex,
         .vk_device = device,
         .vk_queue = queue,
-        .shaders = malloc(0),
+        .shaders = NULL,
+        .final_density = NULL,
         .shaders_len = 0,
+        .fd_sem = {0},
+        .cache_map = cache_map,
+        .cache_map_len = cache_map_size
     };
-    sem_init(&state->fd_sem, 0, 1);
+    mtx_init(&state->fd_sem, mtx_plain);
     return state;
+}
+
+uint64_t pack_chunk_identifier(int x, int z, int fd_index) {
+    return ((uint64_t)(x / 16) << 36) | ((uint64_t)(z / 16) << 8) | (fd_index & 0xFF);
+}
+
+uint64_t splitmix64(uint64_t value) {
+    value ^= value >> 30;
+    value *= 0xbf58476d1ce4e5b9ULL;
+    value ^= value >> 27;
+    value *= 0x94d049bb133111ebULL;
+    value ^= value >> 31;
+    return value;
+}
+
+uint64_t get_cached_chunk_index(size_t len, int x, int z, int fd_index) {
+    return splitmix64(pack_chunk_identifier(x, z, fd_index)) & (len - 1);
+}
+
+bool cache_map_contains(CacheMap* cache_map, uint64_t index, int x, int z, int fd_index) {
+    mtx_lock(&cache_map->chunks[index].sem);
+    if (cache_map->chunks[index].x != x ||
+        cache_map->chunks[index].z != z ||
+        cache_map->chunks[index].fd_index != fd_index ||
+        cache_map->chunks[index].densities == NULL
+    ) {
+        mtx_unlock(&cache_map->chunks[index].sem);
+        return false;
+    }
+    mtx_unlock(&cache_map->chunks[index].sem);
+    return true;
+}
+
+float* cache_map_get(CacheMap* cache_map, uint64_t index, int x, int z, int fd_index) {
+    mtx_lock(&cache_map->chunks[index].sem);
+    if (cache_map->chunks[index].x != x ||
+        cache_map->chunks[index].z != z ||
+        cache_map->chunks[index].fd_index != fd_index ||
+        cache_map->chunks[index].densities == NULL
+    ) {
+        mtx_unlock(&cache_map->chunks[index].sem);
+        return NULL;
+    }
+    return cache_map->chunks[index].densities;
+}
+
+bool cache_map_release(CacheMap* cache_map, uint64_t index) {
+    free(cache_map->chunks[index].densities);
+    cache_map->chunks[index].densities = NULL;
+    mtx_unlock(&cache_map->chunks[index].sem);
+    return true;
+}
+
+void cache_map_put(CacheMap* cache_map, size_t len, int x, int z, int fd_index, float* densities) {
+    uint64_t index = get_cached_chunk_index(len, x, z, fd_index);
+    mtx_lock(&cache_map->chunks[index].sem);
+    if (cache_map->chunks[index].densities != NULL) {
+        free(cache_map->chunks[index].densities);
+    }
+    cache_map->chunks[index].x = x;
+    cache_map->chunks[index].z = z;
+    cache_map->chunks[index].fd_index = fd_index;
+    cache_map->chunks[index].densities = densities;
+    mtx_unlock(&cache_map->chunks[index].sem);
 }
 
 int string_to_op_type(const char* str) {
@@ -213,7 +317,7 @@ Node* build_tree_from_json_recursive(yyjson_val* json) {
         op_type == OP_QUARTER_NEGATIVE ||
         op_type == OP_INVERT ||
         op_type == OP_SQUEEZE ||
-        op_type == OP_INTERPOLATED )
+        op_type == OP_INTERPOLATED)
     {
         Node* arg1 = build_tree_from_json_recursive(yyjson_obj_get(json, "argument"));
         return create_op(op_type, &arg1, NULL);
@@ -313,386 +417,144 @@ Node* build_tree_from_json_recursive(yyjson_val* json) {
     }
 }
 
-int main() {
+void set_noise_states(JNIEnv* env, EvalStack* stack, jobject jNoiseStates, jobject jNoiseLevels) {
+    jclass listClass = (*env)->GetObjectClass(env, jNoiseStates);
+    jmethodID sizeMethod = (*env)->GetMethodID(env, listClass, "size", "()I");
+    jmethodID getMethod = (*env)->GetMethodID(env, listClass, "get", "(I)Ljava/lang/Object;");
+
+    jint noiseStatesSize = (*env)->CallIntMethod(env, jNoiseStates, sizeMethod);
+    jint noiseLevelsSize = (*env)->CallIntMethod(env, jNoiseLevels, sizeMethod);
+
+    NormalNoise* noiseStates = (NormalNoise*)malloc(noiseStatesSize * sizeof(NormalNoise));
+    jclass perlinNoiseCls = (*env)->FindClass(env, "com/endrf/NoiseStates$PerlinNoiseState");
+    jfieldID perlinNoiseLowestFreqValFactorField = (*env)->GetFieldID(env, perlinNoiseCls, "lowestFreqValueFactor", "D");
+    jfieldID perlinNoiseLowestFreqInputFactorField = (*env)->GetFieldID(env, perlinNoiseCls, "lowestFreqInputFactor", "D");
+    jfieldID perlinNoiseLevelsCountField = (*env)->GetFieldID(env, perlinNoiseCls, "levelsCount", "I");
+    jfieldID perlinNoiseLevelsIndexField = (*env)->GetFieldID(env, perlinNoiseCls, "levelsIndex", "I");
+    jclass normalNoiseCls = (*env)->FindClass(env, "com/endrf/NoiseStates$NormalNoiseState");
+    jfieldID normalNoiseNoisesField = (*env)->GetFieldID(env, normalNoiseCls, "noises", "[Lcom/endrf/NoiseStates$PerlinNoiseState;");
+    jfieldID normalNoiseMaxValField = (*env)->GetFieldID(env, normalNoiseCls, "maxValue", "D");
+    jfieldID normalNoiseValFactorField = (*env)->GetFieldID(env, normalNoiseCls, "valueFactor", "D");
+    for (int i = 0; i < noiseStatesSize; i++) {
+        jobject jNoiseObj = (*env)->CallObjectMethod(env, jNoiseStates, getMethod, i);
+        jobjectArray jNoisesArr = (*env)->GetObjectField(env, jNoiseObj, normalNoiseNoisesField);
+        for (int j = 0; j < 2; j++) {
+            jobject jPerlinNoise = (*env)->GetObjectArrayElement(env, jNoisesArr, j);
+            PerlinNoise perlinNoise = {
+                .lowest_freq_value_factor = (*env)->GetDoubleField(env, jPerlinNoise, perlinNoiseLowestFreqValFactorField),
+                .lowest_freq_input_factor = (*env)->GetDoubleField(env, jPerlinNoise, perlinNoiseLowestFreqInputFactorField),
+                .levels_count = (*env)->GetIntField(env, jPerlinNoise, perlinNoiseLevelsCountField),
+                .levels_index = (*env)->GetIntField(env, jPerlinNoise, perlinNoiseLevelsIndexField)
+            };
+            noiseStates[i].noises[j] = perlinNoise;
+        }
+        noiseStates[i].max_value = (*env)->GetDoubleField(env, jNoiseObj, normalNoiseMaxValField);
+        noiseStates[i].value_factor = (*env)->GetDoubleField(env, jNoiseObj, normalNoiseValFactorField);
+    }
+    ImprovedNoise* noiseLevels = (ImprovedNoise*)malloc(noiseLevelsSize * sizeof(ImprovedNoise));
+    jclass improvedNoiseCls = (*env)->FindClass(env, "com/endrf/NoiseStates$ImprovedNoiseState");
+    jfieldID improvedNoiseXField = (*env)->GetFieldID(env, improvedNoiseCls, "x", "D");
+    jfieldID improvedNoiseYField = (*env)->GetFieldID(env, improvedNoiseCls, "y", "D");
+    jfieldID improvedNoiseZField = (*env)->GetFieldID(env, improvedNoiseCls, "z", "D");
+    jfieldID improvedNoiseValuesField = (*env)->GetFieldID(env, improvedNoiseCls, "values", "[B");
+    jfieldID improvedNoiseAmplitudeField = (*env)->GetFieldID(env, improvedNoiseCls, "amplitude", "D");
+    jfieldID improvedNoiseDisabledField = (*env)->GetFieldID(env, improvedNoiseCls, "disabled", "B");
+    for (int i = 0; i < noiseLevelsSize; i++) {
+        jobject jNoiseObj = (*env)->CallObjectMethod(env, jNoiseLevels, getMethod, i);
+        uint8_t values[256];
+        int8_t disabled = (*env)->GetByteField(env, jNoiseObj, improvedNoiseDisabledField);
+        if (disabled) {
+            memset(values, 0, sizeof(values));
+        } else {
+            jbyteArray valArr = (*env)->GetObjectField(env, jNoiseObj, improvedNoiseValuesField);
+            int8_t byteValues[256];
+            (*env)->GetByteArrayRegion(env, valArr, 0, 256, byteValues);
+            for (int i = 0; i < 256; i++)
+                values[i] = byteValues[i] & 0xFF;
+        }
+        noiseLevels[i] = (ImprovedNoise){
+            .x = (*env)->GetDoubleField(env, jNoiseObj, improvedNoiseXField),
+            .y = (*env)->GetDoubleField(env, jNoiseObj, improvedNoiseYField),
+            .z = (*env)->GetDoubleField(env, jNoiseObj, improvedNoiseZField),
+            .amplitude = (*env)->GetDoubleField(env, jNoiseObj, improvedNoiseAmplitudeField),
+            .disabled = disabled
+        };
+        memcpy(noiseLevels[i].values, values, 256);
+        memcpy(noiseLevels[i].values + 256, values, 256);
+    }
+    stack->noise_states = noiseStates;
+    stack->noise_states_len = noiseStatesSize;
+    stack->noise_levels = noiseLevels;
+    stack->noise_levels_len = noiseLevelsSize;
+
+    /* printf("states: %d\n", noiseStatesSize);
+    printf("levels: %d\n", noiseLevelsSize);
+    fflush(stdout); */
+}
+
+JNIEXPORT void JNICALL
+Java_com_endrf_LudicrousEngine_loadFinalDensityShader(
+    JNIEnv* env,
+    jclass cls,
+    jlong instancePtr,
+    jint scale,
+    jint minY,
+    jint height,
+    jint noiseX,
+    jint noiseY,
+    jstring fnJSON,
+    jobject jNoiseStates,
+    jobject jNoiseLevels,
+    jstring dimension
+) {
+    const char* dim_str = (*env)->GetStringUTFChars(env, dimension, NULL);
+    if (dim_str == NULL) {
+        dim_str = "\0";
+    }
+    struct timespec start, end;
+    clock_gettime(TIME_UTC, &start);
+
+    InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
+    if (!state) return;
+
+    // Compile Final Density Pipeline from JSON
     register_op(OP_ADD, 2, 1);
     register_op(OP_MUL, 3, 1);
     register_op(OP_MIN, 1, 1);
     register_op(OP_MAX, 1, 1);
-    /*register_op(OP_ABS, 0, 0);
-    register_op(OP_SQUARE, 0, 0);
-    register_op(OP_CUBE, 0,0);
-    register_op(OP_HALF_NEGATIVE, 0, 0);
-    register_op(OP_QUARTER_NEGATIVE, 0, 0);
-    register_op(OP_INVERT, 0, 0);
-    register_op(OP_SQUEEZE, 0, 0);
-    register_op(OP_CLAMP, 0, 0);
-    register_op(OP_SHIFTED_NOISE, 10, 0);*/
-    //const char* json = "{\"type\":\"minecraft:mul\",\"argument1\":{\"type\":\"minecraft:abs\",\"argument\":-0.1},\"argument2\":{\"type\":\"minecraft:add\",\"argument1\":0.05,\"argument2\":0.05}}";
-    const char* json = "{\"type\":\"minecraft:spline\",\"spline\":{\"coordinate\":{\"type\":\"minecraft:add\",\"argument1\":1.0,\"argument2\":0.5},\"points\":[{\"derivative\":0.0,\"location\":0.5,\"value\":-7.0},{\"derivative\":0.0,\"location\":1.0,\"value\":{\"coordinate\":{\"type\":\"minecraft:abs\",\"argument\":-6.5},\"points\":[{\"derivative\":0.0,\"location\":6.0,\"value\":65.0},{\"derivative\":0.0,\"location\":7.0,\"value\":67.0}]}},{\"derivative\":0.0,\"location\":2.0,\"value\":{\"coordinate\":{\"type\":\"minecraft:mul\",\"argument1\":-4.0,\"argument2\":0.76},\"points\":[{\"derivative\":0.0,\"location\":-3.0,\"value\":68.0},{\"derivative\":0.0,\"location\":-1.0,\"value\":-70}]}}]}}";
+    struct timespec jsont_start, jsont_end;
+    clock_gettime(TIME_UTC, &jsont_start);
+    const char* json = (*env)->GetStringUTFChars(env, fnJSON, NULL);
+
     yyjson_doc* doc = yyjson_read(json, strlen(json), 0);
     yyjson_val* json_root = yyjson_doc_get_root(doc);
-
     Node* root = build_tree_from_json_recursive(json_root);
-
-    root = tree_to_vine(root);
-    EvalStack* stack = generate_stack_wrapper(root);
-    double result = evaluate_stack(stack, 0, 0, 0, NULL);
-    printf("registers: %d\n", stack->max_reg+1);
-    printf("result: %.30lf\n", result);
-
     yyjson_doc_free(doc);
-}
 
-typedef struct {
-    StackFrame data[1024];
-} StackBuffer;
+    EvalStack* stack = (EvalStack*)malloc(sizeof(EvalStack));
+    set_noise_states(env, stack, jNoiseStates, jNoiseLevels);
+    generate_stack_wrapper(root, stack);
+    clock_gettime(TIME_UTC, &jsont_end);
+    long long json_time = (jsont_end.tv_sec - jsont_start.tv_sec) * 1000LL + (jsont_end.tv_nsec - jsont_start.tv_nsec) / 1000000LL;
+    log_debug("Max register usage for level \"%s\" final density function: %d slots", dim_str, stack->max_reg + 1);
 
-typedef struct {
-    double data[512];
-} ConstArgsBuffer;
+    stack->scale = scale;
+    stack->min_y = minY;
+    stack->height = height;
+    stack->cell_size_x = noiseX;
+    stack->cell_size_y = noiseY;
+    //stack->interp_len = stack->interp_len != 0 ? stack->interp_len : 1;
+    stack->cache_once_len = stack->cache_once_len != 0 ? stack->cache_once_len : 1;
+    stack->cache_flat_len = stack->cache_flat_len != 0 ? stack->cache_flat_len : 1;
+    stack->cache_2d_len = stack->cache_2d_len != 0 ? stack->cache_2d_len : 1;
 
-/*int main() {
-    InstanceState* state = create_instance(VK_QUEUE_COMPUTE_BIT);
-    FILE *f = fopen("compute/eval.spv", "rb");
-    fseek(f, 0, SEEK_END);
-    size_t size = ftell(f);
-    rewind(f);
-    uint32_t *code = malloc(size);
-    fread(code, 1, size, f);
-    fclose(f);
-    double const_args[1024] = {0};
-    const_args[1] = 67.67;
-    ShaderBufferData buffers[] = {
-        { .buf = const_args, .size = sizeof(double) * 1024,
-          .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-          .sharing = VK_SHARING_MODE_EXCLUSIVE },
-        { .buf = NULL, .size = sizeof(double) * 1024,
-          .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-          .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .sharing = VK_SHARING_MODE_EXCLUSIVE },
-        { .buf = NULL, .size = sizeof(double) * 1024, .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-          .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-          .sharing = VK_SHARING_MODE_EXCLUSIVE }
-    };
-    VkDescriptorSetLayoutBinding desc_set_layout[] = {
-        { .binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
-        { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
-    };
-    ShaderDescriptorLayout desc_layouts[] = {
-        { .bindings = desc_set_layout,
-          .num_bindings = sizeof(desc_set_layout) / sizeof(desc_set_layout[0]) },
-    };
-    ShaderDescriptorSetUpdate desc_updates[] = {
-        { .desc_index = 0, .mem_indexes = (size_t[]){1}, .buf_indexes = (size_t[]){0},
-          .desc_count = 1, .set_index = 0 },
-        { .desc_index = 1, .mem_indexes = (size_t[]){2}, .buf_indexes = (size_t[]){0},
-          .desc_count = 1, .set_index = 0 },
-    };
-    ShaderCreateData data = {
-        .buffers = buffers,
-        .num_buffers = sizeof(buffers) / sizeof(buffers[0]),
-        .desc_layouts = desc_layouts,
-        .num_desc_layouts = sizeof(desc_layouts) / sizeof(desc_layouts[0]),
-        .desc_updates = desc_updates,
-        .num_desc_updates = sizeof(desc_updates) / sizeof(desc_updates[0]),
-    };
-    ShaderData shader;
-    create_shader(state, code, size, &data, &shader);
-    // Start recording for command buffer
-    vkBeginCommandBuffer(shader.vk_cmd, &(VkCommandBufferBeginInfo){
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    });
-    vkCmdCopyBuffer(shader.vk_cmd, shader.shader_mem[0].vk_buf[0], shader.shader_mem[1].vk_buf[0], 1, &(VkBufferCopy){ .size = sizeof(double) * 1024 });
-    // Bind compute pipeline to command buffer
-    vkCmdBindPipeline(shader.vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shader.vk_pipeline);
-    // Bind compute pipeline descriptors to command buffer
-    vkCmdBindDescriptorSets(shader.vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                             shader.vk_pipeline_layout, 0, shader.vk_desc_sets_len, shader.vk_desc_sets, 0, NULL);
-    // local_size_x=64, so groups = ELEMENT_COUNT / 64
-    // Set the dispatched group sizes
-    vkCmdDispatch(shader.vk_cmd, ELEMENT_COUNT / 64, 1, 1);
-    // Stop recording command buffer
-    vkEndCommandBuffer(shader.vk_cmd);
-
-    // Create wait barrier
-    VkFence fence;
-    vkCreateFence(state->vk_device,
-        &(VkFenceCreateInfo){
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        }, NULL, &fence);
-    // Execute compute pipeline via command buffer
-    vkQueueSubmit(state->vk_queue, 1, &(VkSubmitInfo){
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &(shader.vk_cmd),
-        }, fence);
-    // Wait for barrier complete signal
-    vkWaitForFences(state->vk_device, 1, &fence, VK_TRUE, UINT64_MAX);
-
-    // Read results
-    double *results;
-    vkMapMemory(state->vk_device, shader.shader_mem[2].vk_mem, 0, BUFFER_SIZE, 0, (void **)&results);
-    printf("out[0]=%f  out[1]=%f  out[1023]=%f\n",
-           results[0], results[1], results[1023]);
-    vkUnmapMemory(state->vk_device, shader.shader_mem[2].vk_mem);
-    return 0;
-}*/
-
-int vulkan_test(uint32_t* spirv, size_t size) {
-    // Create Vulkan instance with Vulkan API version 1.0
-    VkInstance instance;
-    vkCreateInstance(&(VkInstanceCreateInfo){
-            .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-            .pApplicationInfo = &(VkApplicationInfo){
-                .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-                .apiVersion = VK_API_VERSION_1_0,
-            },
-        }, NULL, &instance);
-
-    // Get Physical device (pick first)
-    //uint32_t devCount = 1;
-    VkPhysicalDevice physDev;
-    vkEnumeratePhysicalDevices(instance, &(uint32_t){1}, &physDev);
-
-    // Find a compute queue family
-    uint32_t qfCount;
-    // Get number of queue family properties
-    vkGetPhysicalDeviceQueueFamilyProperties(physDev, &qfCount, NULL);
-    // Allocate and set queue family props
-    VkQueueFamilyProperties *qfProps = malloc(qfCount * sizeof(VkQueueFamilyProperties));
-    vkGetPhysicalDeviceQueueFamilyProperties(physDev, &qfCount, qfProps);
-    // Find first occurrence of a Queue Family that supports compute operations
-    uint32_t queueFamilyIndex = UINT32_MAX;
-    for (uint32_t i = 0; i < qfCount; i++) {
-        if (qfProps[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
-            queueFamilyIndex = i;
-            break;
-        }
-    }
-    free(qfProps);
-
-    // Create Logical device with queue family
-    VkDevice device;
-    vkCreateDevice(physDev, &(VkDeviceCreateInfo){
-            .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-            .queueCreateInfoCount = 1,
-            .pQueueCreateInfos = &(VkDeviceQueueCreateInfo){
-                .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-                .queueFamilyIndex = queueFamilyIndex,
-                .queueCount = 1,
-                .pQueuePriorities = &(float){1.0f},
-            }
-        }, NULL, &device);
-
-    // Get device queue
-    VkQueue queue;
-    vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
-
-    // Prepare host/cpu visible buffers
-    VkBuffer stackBuf, constArgsBuf, outBuf;
-    VkDeviceMemory stackMem, constArgsMem, outMem;
-    VkMemoryPropertyFlags hostVisible =
-        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-
-    // Create stack buffer
-    createBuffer(device, physDev, sizeof(StackBuffer),
-                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostVisible,
-                 &stackBuf, &stackMem);
-    // Create const args buffer
-    createBuffer(device, physDev, sizeof(ConstArgsBuffer),
-                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostVisible,
-                 &constArgsBuf, &constArgsMem);
-    createBuffer(device, physDev, BUFFER_SIZE,
-                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, hostVisible,
-                 &outBuf, &outMem);
-
-    // 6. Upload input data
-    void *mapped1;
-    StackBuffer stack = {0};
-    vkMapMemory(device, stackMem, 0, sizeof(StackBuffer), 0, &mapped1);
-    memcpy(mapped1, &stack, sizeof(StackBuffer));
-    vkUnmapMemory(device, stackMem);
-    void *mapped2;
-    ConstArgsBuffer const_args = {0};
-    const_args.data[0] = 67.67f;
-    vkMapMemory(device, constArgsMem, 0, sizeof(ConstArgsBuffer), 0, &mapped2);
-    memcpy(mapped2, &const_args, sizeof(ConstArgsBuffer));
-    vkUnmapMemory(device, constArgsMem);
-
-    // 7. Descriptor set layout
-    VkDescriptorSetLayoutBinding bindings[3] = {
-        { .binding=0, .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-          .descriptorCount=1, .stageFlags=VK_SHADER_STAGE_COMPUTE_BIT },
-        { .binding=1, .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-          .descriptorCount=1, .stageFlags=VK_SHADER_STAGE_COMPUTE_BIT },
-        { .binding=2, .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-          .descriptorCount=1, .stageFlags=VK_SHADER_STAGE_COMPUTE_BIT },
-    };
-    VkDescriptorSetLayoutCreateInfo dslCI = {
-        .sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        .bindingCount = 3,
-        .pBindings    = bindings,
-    };
-    VkDescriptorSetLayout descLayout;
-    vkCreateDescriptorSetLayout(device, &dslCI, NULL, &descLayout);
-
-    // Pipeline layout
-    VkPipelineLayoutCreateInfo plCI = {
-        .sType          = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-        .setLayoutCount = 1,
-        .pSetLayouts    = &descLayout,
-    };
-    VkPipelineLayout pipelineLayout;
-    vkCreatePipelineLayout(device, &plCI, NULL, &pipelineLayout);
-
-    // Create Compute Pipeline
-    VkShaderModule shaderMod = createShaderModuleFromBytes(device, spirv, size);
-    VkComputePipelineCreateInfo cpCI = {
-        .sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
-        .stage  = {
-            .sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-            .stage  = VK_SHADER_STAGE_COMPUTE_BIT,
-            .module = shaderMod,
-            .pName  = "main",
-        },
-        .layout = pipelineLayout,
-    };
-    VkPipeline pipeline;
-    vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &cpCI, NULL, &pipeline);
-
-    // 9. Descriptor pool + set
-    VkDescriptorPoolSize poolSize = {
-        .type            = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .descriptorCount = 3,
-    };
-    VkDescriptorPoolCreateInfo dpCI = {
-        .sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-        .maxSets       = 1,
-        .poolSizeCount = 1,
-        .pPoolSizes    = &poolSize,
-    };
-    VkDescriptorPool descPool;
-    vkCreateDescriptorPool(device, &dpCI, NULL, &descPool);
-
-    VkDescriptorSetAllocateInfo dsAI = {
-        .sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-        .descriptorPool     = descPool,
-        .descriptorSetCount = 1,
-        .pSetLayouts        = &descLayout,
-    };
-    VkDescriptorSet descSet;
-    vkAllocateDescriptorSets(device, &dsAI, &descSet);
-
-    // 10. Write descriptors
-    VkDescriptorBufferInfo stackInfo  = { stackBuf,  0, sizeof(StackBuffer) };
-    VkDescriptorBufferInfo constArgsInfo  = { constArgsBuf,  0, sizeof(ConstArgsBuffer) };
-    VkDescriptorBufferInfo outInfo = { outBuf, 0, BUFFER_SIZE };
-    VkWriteDescriptorSet writes[3] = {
-        { .sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet=descSet,
-          .dstBinding=0, .descriptorCount=1,
-          .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-          .pBufferInfo=&stackInfo },
-        { .sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet=descSet,
-          .dstBinding=1, .descriptorCount=1,
-          .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-          .pBufferInfo=&constArgsInfo },
-        { .sType=VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet=descSet,
-          .dstBinding=2, .descriptorCount=1,
-          .descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-          .pBufferInfo=&outInfo },
-    };
-    vkUpdateDescriptorSets(device, 3, writes, 0, NULL);
-
-    // Create Command buffer pool
-    VkCommandPoolCreateInfo cpoolCI = {
-        .sType            = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-        .queueFamilyIndex = queueFamilyIndex,
-    };
-    VkCommandPool cmdPool;
-    vkCreateCommandPool(device, &cpoolCI, NULL, &cmdPool);
-
-    VkCommandBufferAllocateInfo cbAI = {
-        .sType              = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool        = cmdPool,
-        .level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    };
-
-    // Allocate command buffer
-    VkCommandBuffer cmd;
-    vkAllocateCommandBuffers(device, &cbAI, &cmd);
-
-    // Start recording for command buffer
-    vkBeginCommandBuffer(cmd, &(VkCommandBufferBeginInfo){
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    });
-    // Bind compute pipeline to command buffer
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    // Bind compute pipeline descriptors to command buffer
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                             pipelineLayout, 0, 1, &descSet, 0, NULL);
-    // local_size_x=64, so groups = ELEMENT_COUNT / 64
-    // Set the dispatched group sizes
-    vkCmdDispatch(cmd, ELEMENT_COUNT / 64, 1, 1);
-    // Stop recording command buffer
-    vkEndCommandBuffer(cmd);
-
-    // Create wait barrier
-    VkFence fence;
-    vkCreateFence(device,
-        &(VkFenceCreateInfo){
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-        }, NULL, &fence);
-    // Execute compute pipeline via command buffer
-    vkQueueSubmit(queue, 1, &(VkSubmitInfo){
-            .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
-            .commandBufferCount = 1,
-            .pCommandBuffers = &cmd,
-        }, fence);
-    // Wait for barrier complete signal
-    vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX);
-
-    // Read results
-    double *results;
-    vkMapMemory(device, outMem, 0, BUFFER_SIZE, 0, (void **)&results);
-    printf("out[0]=%f  out[1]=%f  out[1023]=%f\n",
-           results[0], results[1], results[1023]);
-    vkUnmapMemory(device, outMem);
-
-    // 14. Cleanup (abbreviated)
-    vkDestroyFence(device, fence, NULL);
-    vkDestroyCommandPool(device, cmdPool, NULL);
-    vkDestroyDescriptorPool(device, descPool, NULL);
-    vkDestroyPipeline(device, pipeline, NULL);
-    vkDestroyPipelineLayout(device, pipelineLayout, NULL);
-    vkDestroyShaderModule(device, shaderMod, NULL);
-    vkDestroyDescriptorSetLayout(device, descLayout, NULL);
-    vkDestroyBuffer(device, stackBuf, NULL);  vkFreeMemory(device, stackMem, NULL);
-    vkDestroyBuffer(device, constArgsBuf, NULL);  vkFreeMemory(device, constArgsMem, NULL);
-    vkDestroyBuffer(device, outBuf, NULL); vkFreeMemory(device, outMem, NULL);
-    vkDestroyDevice(device, NULL);
-    vkDestroyInstance(instance, NULL);
-    return 0;
-}
-
-JNIEXPORT void JNICALL
-Java_com_endrf_LudicrousEngine_loadShader(JNIEnv* env, jclass cls, jlong instancePtr, jobject byteBuffer) {
-    InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
-    if (!state) return;
-    void* bufferPtr = (*env)->GetDirectBufferAddress(env, byteBuffer);
-    if (!bufferPtr) return;
-    uint32_t* spirvDataPtr = (uint32_t*)(bufferPtr);
-    size_t len = (size_t)(*env)->GetDirectBufferCapacity(env, byteBuffer);
-    EvalStack* stack = state->final_density;
-    int cell_width = 4;
-    int cell_height = 8;
-    int xz_samples = (16 / cell_width) + 1;
-    int y_samples = (384 / cell_height) + 1;
+    // Build Final Density Compute Shader
+    int width = 16 * scale;
+    int cell_width = noiseX << 2;
+    int cell_height = noiseY << 2;
+    int xz_samples = (width / cell_width) + 1;
+    int y_samples = (height / cell_height) + 1;
+    int size = height * width * width;
     ShaderBufferData buffers[] = {
         // CPU Staging buffer for frames
         { .buf = stack->op_stack, .size = sizeof(StackFrame) * stack->op_stack_len,
@@ -740,23 +602,24 @@ Java_com_endrf_LudicrousEngine_loadShader(JNIEnv* env, jclass cls, jlong instanc
           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
           .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .sharing = VK_SHARING_MODE_EXCLUSIVE },
         // GPU Storage buffer for output
-        { .buf = NULL, .size = sizeof(double) * 98304,
+        { .buf = NULL, .size = sizeof(float) * size,
           .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
           .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, .sharing = VK_SHARING_MODE_EXCLUSIVE },
         // CPU Staging buffer for output
-        { .buf = NULL, .size = sizeof(double) * 98304,
+        { .buf = NULL, .size = sizeof(float) * size,
           .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
           .flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
           .sharing = VK_SHARING_MODE_EXCLUSIVE },
         // GPU Storage buffer for interpolation global cache
-        { .buf = NULL, .size = sizeof(double) * xz_samples * xz_samples * y_samples * stack->interp_len,
+        { .buf = NULL, .size = sizeof(float) * xz_samples * xz_samples * y_samples * stack->interp_len,
           .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
           .sharing = VK_SHARING_MODE_EXCLUSIVE },
         // GPU Storage buffer for cache flat global
-        { .buf = NULL, .size = sizeof(double) * xz_samples * xz_samples * stack->cache_flat_len,
+        { .buf = NULL, .size = sizeof(float) * xz_samples * xz_samples * stack->cache_flat_len,
           .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
           .sharing = VK_SHARING_MODE_EXCLUSIVE },
-        { .buf = NULL, .size = sizeof(double) * 17 * 17 * stack->cache_2d_len,
+        // GPU Storage buffer for cache 2d global
+        { .buf = NULL, .size = sizeof(float) * (width+1) * (width+1) * stack->cache_2d_len,
           .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, .flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
           .sharing = VK_SHARING_MODE_EXCLUSIVE }
     };
@@ -780,7 +643,7 @@ Java_com_endrf_LudicrousEngine_loadShader(JNIEnv* env, jclass cls, jlong instanc
         { .binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
           .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
         { .binding = 2, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT }
+          .descriptorCount = 1, .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT },
     };
     ShaderDescriptorLayout desc_layouts[] = {
         { .bindings = desc_set_layout1,
@@ -809,7 +672,7 @@ Java_com_endrf_LudicrousEngine_loadShader(JNIEnv* env, jclass cls, jlong instanc
           .buf_indexes = (size_t[]){0}, .desc_count = 1, .set_index = 1 }
     };
     VkSpecializationInfo spec = {
-        .mapEntryCount = 8,
+        .mapEntryCount = 9,
         .pMapEntries = (VkSpecializationMapEntry[]){
             { .constantID = 0, .offset = 0, .size = sizeof(uint32_t) }, // Num registers
             { .constantID = 1, .offset = sizeof(uint32_t), .size = sizeof(uint32_t) }, // Height
@@ -818,18 +681,20 @@ Java_com_endrf_LudicrousEngine_loadShader(JNIEnv* env, jclass cls, jlong instanc
             { .constantID = 4, .offset = 4 * sizeof(uint32_t), .size = sizeof(uint32_t) }, // Interpolated size
             { .constantID = 5, .offset = 5 * sizeof(uint32_t), .size = sizeof(uint32_t) }, // Cache Once length
             { .constantID = 6, .offset = 6 * sizeof(uint32_t), .size = sizeof(uint32_t) }, // Cache Flat length
-            { .constantID = 7, .offset = 7 * sizeof(uint32_t), .size = sizeof(uint32_t) } // Cache 2D Size
+            { .constantID = 7, .offset = 7 * sizeof(uint32_t), .size = sizeof(uint32_t) }, // Cache 2D Size
+            { .constantID = 8, .offset = 8 * sizeof(uint32_t), .size = sizeof(uint32_t) } // Scale
         },
-        .dataSize = sizeof(uint32_t) * 8,
+        .dataSize = sizeof(uint32_t) * 9,
         .pData = (uint32_t[]){
             stack->max_reg + 1,
-            384,
+            height,
             cell_width,
             cell_height,
             stack->interp_len,
             stack->cache_once_len,
             stack->cache_flat_len,
-            stack->cache_2d_len
+            stack->cache_2d_len,
+            scale,
         }
     };
     ShaderCreateData create_data = {
@@ -839,11 +704,14 @@ Java_com_endrf_LudicrousEngine_loadShader(JNIEnv* env, jclass cls, jlong instanc
         .num_desc_layouts = sizeof(desc_layouts) / sizeof(desc_layouts[0]),
         .desc_updates = desc_updates,
         .num_desc_updates = sizeof(desc_updates) / sizeof(desc_updates[0]),
-        .spec = &spec
+        .spec = &spec,
+        .push_const_size = 16
     };
+    struct timespec vkt_start, vkt_end;
+    clock_gettime(TIME_UTC, &vkt_start);
     ShaderData* shader = (ShaderData*)malloc(sizeof(ShaderData));
-    create_shader(state, spirvDataPtr, len, &create_data, shader);
-
+    create_shader(state, (uint32_t*)eval_spv, eval_spv_len, &create_data, shader);
+    mtx_lock(&state->fd_sem);
     vkBeginCommandBuffer(shader->vk_cmd, &(VkCommandBufferBeginInfo){
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT
@@ -961,97 +829,56 @@ Java_com_endrf_LudicrousEngine_loadShader(JNIEnv* env, jclass cls, jlong instanc
         5, barriers,
         0, NULL
     );
-    vkCmdPushConstants(
-        shader->vk_cmd,
-        shader->vk_pipeline_layout,
-        VK_SHADER_STAGE_COMPUTE_BIT,
-        0,
-        sizeof(int) * 4,
-        &(int[]){0, 0, 0, 0}
-    );
-    vkCmdDispatch(shader->vk_cmd, (98304 + 63) / 64, 1, 1);
-    VkBufferMemoryBarrier barrier = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .buffer = shader->shader_mem[10].vk_buf[0],
-        .offset = 0,
-        .size = VK_WHOLE_SIZE
-    };
-    vkCmdPipelineBarrier(
-        shader->vk_cmd,
-        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0,
-        0, NULL,
-        1, &barrier,
-        0, NULL
-    );
-    // Copy GPU output buffer to CPU
-    vkCmdCopyBuffer(
-        shader->vk_cmd,
-        shader->shader_mem[10].vk_buf[0],
-        shader->shader_mem[11].vk_buf[0],
-        1,
-        &(VkBufferCopy){ .srcOffset = 0, .dstOffset = 0, .size = sizeof(double) * 98304 }
-    );
     vkEndCommandBuffer(shader->vk_cmd);
-
-    VkFence fence;
-    vkCreateFence(state->vk_device,
-        &(VkFenceCreateInfo){
-            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
-        },
-        NULL, &fence
-    );
-    int* tmp = realloc(state->shaders, state->shaders_len + 1);
-    if (tmp != NULL) {
-        state->shaders[state->shaders_len] = shader;
-        state->shaders_len++;
+    clock_gettime(TIME_UTC, &vkt_end);
+    long long vk_time = (vkt_end.tv_sec - vkt_start.tv_sec) * 1000LL + (vkt_end.tv_nsec - vkt_start.tv_nsec) / 1000000LL;
+    ShaderData** shaders = realloc(state->shaders, (state->shaders_len + 1) * sizeof(ShaderData*));
+    if (shaders == NULL) {
+        log_err("Shader data realloc returned null");
+    } else {
+        state->shaders = shaders;
     }
-    state->fd_fence = fence;
+    state->shaders[state->shaders_len] = shader;
+    EvalStack** final_density = realloc(state->final_density, (state->shaders_len + 1) * sizeof(EvalStack*));
+    if (final_density == NULL) {
+        log_err("Final density data realloc returned null");
+    } else {
+        state->final_density = final_density;
+    }
+    state->final_density[state->shaders_len] = stack;
+    if (shaders != NULL && final_density != NULL)
+        state->shaders_len++;
+    if (state->shaders_len == 1) {
+        VkFence fence;
+        vkCreateFence(state->vk_device,
+            &(VkFenceCreateInfo){
+                .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO
+            },
+            NULL, &fence
+        );
+        state->fd_fence = fence;
+    }
     vkQueueSubmit(state->vk_queue, 1,
         &(VkSubmitInfo){
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .commandBufferCount = 1,
             .pCommandBuffers = &(shader->vk_cmd)
         },
-        fence
+        state->fd_fence
     );
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
+    vkWaitForFences(state->vk_device, 1, &state->fd_fence, VK_TRUE, UINT64_MAX);
+    mtx_unlock(&state->fd_sem);
+    clock_gettime(TIME_UTC, &end);
+    long long total_time = (end.tv_sec - start.tv_sec) * 1000LL + (end.tv_nsec - start.tv_nsec) / 1000000LL;
 
-    vkWaitForFences(state->vk_device, 1, &fence, VK_TRUE, UINT64_MAX);
+    log_info("Compiled compute shader for level \"%s\" in %lld ms (json: %lld ms, vulkan: %lld ms)", dim_str, total_time, json_time, vk_time);
+    (*env)->ReleaseStringUTFChars(env, dimension, dim_str);
+}
 
-    double* results;
-    vkMapMemory(
-        state->vk_device,
-        shader->shader_mem[11].vk_mem,
-        0,
-        sizeof(double) * 98304,
-        0,
-        (void**)&results
-    );
-    clock_gettime(CLOCK_MONOTONIC_RAW, &end);
-
-    printf("GPU out[0]=%lf  out[1]=%lf  out[98303]=%lf\n",
-           results[0], results[1], results[98303]);
-    printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
-    fflush(stdout);
-    vkUnmapMemory(state->vk_device, shader->shader_mem[11].vk_mem);
-    double* test_arr = (double*)malloc(sizeof(double) * 98304);
-
-    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-    for (int i = 0; i < 98304; i++) {
-        test_arr[i] = evaluate_stack(stack, i, 70, 0, NULL);
-    }
-    clock_gettime(CLOCK_MONOTONIC_RAW, &end);
-    printf("CPU out[0]=%lf  out[1]=%lf  out[98303]=%lf\n",
-               test_arr[0], test_arr[1], test_arr[98303]);
-    printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
-    fflush(stdout);
+JNIEXPORT jint JNICALL
+JNI_OnLoad(JavaVM* vm, void* reserved) {
+    java_vm = vm;
+    return JNI_VERSION_24;
 }
 
 JNIEXPORT jlong JNICALL
@@ -1060,212 +887,129 @@ Java_com_endrf_LudicrousEngine_newInstance(JNIEnv* env, jclass cls) {
     return (jlong)(intptr_t)state;
 }
 
-JNIEXPORT void JNICALL
-Java_com_endrf_LudicrousEngine_setDensityFunction(JNIEnv* env, jclass cls, jlong instancePtr, jstring fnJSON) {
-    InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
-    register_op(OP_ADD, 2, 1);
-    register_op(OP_MUL, 3, 1);
-    register_op(OP_MIN, 1, 1);
-    register_op(OP_MAX, 1, 1);
-    const char* json = (*env)->GetStringUTFChars(env, fnJSON, NULL);
-    //printf("fd %s\n", json);
-
-    yyjson_doc* doc = yyjson_read(json, strlen(json), 0);
-    yyjson_val* json_root = yyjson_doc_get_root(doc);
-
-    Node* root = build_tree_from_json_recursive(json_root);
-
-    //root = tree_to_vine(root);
-    EvalStack* stack = generate_stack_wrapper(root);
-    state->final_density = stack;
-    //double result = evaluate_stack(stack, 0, 0, 0);
-    printf("registers: %d\n", stack->max_reg+1);
-    //printf("result: %.30lf\n", result);
-    yyjson_doc_free(doc);
-    fflush(stdout);
-}
-
-JNIEXPORT void JNICALL
-Java_com_endrf_LudicrousEngine_setNoiseStates(JNIEnv* env, jclass cls, jlong instancePtr, jobject jNoiseStates, jobject jNoiseLevels) {
-    InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
-    jclass listClass = (*env)->GetObjectClass(env, jNoiseStates);
-    jmethodID sizeMethod = (*env)->GetMethodID(env, listClass, "size", "()I");
-    jmethodID getMethod = (*env)->GetMethodID(env, listClass, "get", "(I)Ljava/lang/Object;");
-
-    jint noiseStatesSize = (*env)->CallIntMethod(env, jNoiseStates, sizeMethod);
-    jint noiseLevelsSize = (*env)->CallIntMethod(env, jNoiseLevels, sizeMethod);
-
-    NormalNoise* noiseStates = (NormalNoise*)malloc(noiseStatesSize * sizeof(NormalNoise));
-    jclass perlinNoiseCls = (*env)->FindClass(env, "com/endrf/NoiseStates$PerlinNoiseState");
-    jfieldID perlinNoiseLowestFreqValFactorField = (*env)->GetFieldID(env, perlinNoiseCls, "lowestFreqValueFactor", "D");
-    jfieldID perlinNoiseLowestFreqInputFactorField = (*env)->GetFieldID(env, perlinNoiseCls, "lowestFreqInputFactor", "D");
-    jfieldID perlinNoiseLevelsCountField = (*env)->GetFieldID(env, perlinNoiseCls, "levelsCount", "I");
-    jfieldID perlinNoiseLevelsIndexField = (*env)->GetFieldID(env, perlinNoiseCls, "levelsIndex", "I");
-    jclass normalNoiseCls = (*env)->FindClass(env, "com/endrf/NoiseStates$NormalNoiseState");
-    jfieldID normalNoiseNoisesField = (*env)->GetFieldID(env, normalNoiseCls, "noises", "[Lcom/endrf/NoiseStates$PerlinNoiseState;");
-    jfieldID normalNoiseMaxValField = (*env)->GetFieldID(env, normalNoiseCls, "maxValue", "D");
-    jfieldID normalNoiseValFactorField = (*env)->GetFieldID(env, normalNoiseCls, "valueFactor", "D");
-    for (int i = 0; i < noiseStatesSize; i++) {
-        jobject jNoiseObj = (*env)->CallObjectMethod(env, jNoiseStates, getMethod, i);
-        jobjectArray jNoisesArr = (*env)->GetObjectField(env, jNoiseObj, normalNoiseNoisesField);
-        for (int j = 0; j < 2; j++) {
-            jobject jPerlinNoise = (*env)->GetObjectArrayElement(env, jNoisesArr, j);
-            PerlinNoise perlinNoise = {
-                .lowest_freq_value_factor = (*env)->GetDoubleField(env, jPerlinNoise, perlinNoiseLowestFreqValFactorField),
-                .lowest_freq_input_factor = (*env)->GetDoubleField(env, jPerlinNoise, perlinNoiseLowestFreqInputFactorField),
-                .levels_count = (*env)->GetIntField(env, jPerlinNoise, perlinNoiseLevelsCountField),
-                .levels_index = (*env)->GetIntField(env, jPerlinNoise, perlinNoiseLevelsIndexField)
-            };
-            noiseStates[i].noises[j] = perlinNoise;
-        }
-        noiseStates[i].max_value = (*env)->GetDoubleField(env, jNoiseObj, normalNoiseMaxValField);
-        noiseStates[i].value_factor = (*env)->GetDoubleField(env, jNoiseObj, normalNoiseValFactorField);
-    }
-    ImprovedNoise* noiseLevels = (ImprovedNoise*)malloc(noiseLevelsSize * sizeof(ImprovedNoise));
-    jclass improvedNoiseCls = (*env)->FindClass(env, "com/endrf/NoiseStates$ImprovedNoiseState");
-    jfieldID improvedNoiseXField = (*env)->GetFieldID(env, improvedNoiseCls, "x", "D");
-    jfieldID improvedNoiseYField = (*env)->GetFieldID(env, improvedNoiseCls, "y", "D");
-    jfieldID improvedNoiseZField = (*env)->GetFieldID(env, improvedNoiseCls, "z", "D");
-    jfieldID improvedNoiseValuesField = (*env)->GetFieldID(env, improvedNoiseCls, "values", "[B");
-    jfieldID improvedNoiseAmplitudeField = (*env)->GetFieldID(env, improvedNoiseCls, "amplitude", "D");
-    jfieldID improvedNoiseDisabledField = (*env)->GetFieldID(env, improvedNoiseCls, "disabled", "Z");
-    for (int i = 0; i < noiseLevelsSize; i++) {
-        jobject jNoiseObj = (*env)->CallObjectMethod(env, jNoiseLevels, getMethod, i);
-        uint8_t values[256];
-        int8_t disabled = (*env)->GetBooleanField(env, jNoiseObj, improvedNoiseDisabledField);
-        if (disabled) {
-            memset(values, 0, sizeof(values));
-        } else {
-            jbyteArray valArr = (*env)->GetObjectField(env, jNoiseObj, improvedNoiseValuesField);
-            int8_t byteValues[256];
-            (*env)->GetByteArrayRegion(env, valArr, 0, 256, byteValues);
-            for (int i = 0; i < 256; i++)
-                values[i] = byteValues[i] & 0xFF;
-        }
-        noiseLevels[i] = (ImprovedNoise){
-            .x = (*env)->GetDoubleField(env, jNoiseObj, improvedNoiseXField),
-            .y = (*env)->GetDoubleField(env, jNoiseObj, improvedNoiseYField),
-            .z = (*env)->GetDoubleField(env, jNoiseObj, improvedNoiseZField),
-            .amplitude = (*env)->GetDoubleField(env, jNoiseObj, improvedNoiseAmplitudeField),
-            .disabled = disabled
-        };
-        memcpy(noiseLevels[i].values, values, 256);
-        memcpy(noiseLevels[i].values + 256, values, 256);
-    }
-    EvalStack* stack = state->final_density;
-    stack->noise_states = noiseStates;
-    stack->noise_states_len = noiseStatesSize;
-    stack->noise_levels = noiseLevels;
-    stack->noise_levels_len = noiseLevelsSize;
-
-    struct timespec start, end;
-    double result;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-    result = generate_normal_noise(&noiseStates[12], noiseLevels, 57392152914566.49321, 67432010703250.432, -97419932495.33332);
-    //result = generate_normal_noise(&noiseStates[39], noiseLevels, 0.0, 0.0, 0.0);
-    clock_gettime(CLOCK_MONOTONIC_RAW, &end);
-    printf("normalnoise c: %.17lf\n", result);
-    printf("states: %d\n", noiseStatesSize);
-    printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
-    fflush(stdout);
-}
-
 JNIEXPORT jobject JNICALL
-Java_com_endrf_LudicrousEngine_fillNoiseAccel(JNIEnv* env, jclass cls, jlong instancePtr, jint min_y, jint height, jint cell_width, jint cell_height, jint x, jint z/* , jdoubleArray j_densities */) {
-    /* struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &start); */
+Java_com_endrf_LudicrousEngine_fillNoiseAccel(JNIEnv* env, jclass cls, jlong instancePtr, jint fdIndex, jint x, jint z, jobject j_ret_type) {
+    jint* j_ret = (*env)->GetIntArrayElements(env, j_ret_type, NULL);
     InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
-    int size = height * 16 * 16;
-    int xz_samples = (16 / cell_width) + 1;
+    if (state == NULL) return NULL;
+    if (fdIndex > state->shaders_len - 1) {
+        return NULL;
+    }
+    mtx_lock(&state->fd_sem);
+    EvalStack* stack = state->final_density[fdIndex];
+    int scale = stack->scale; // Should be odd
+    int min_y = stack->min_y;
+    int height = stack->height;
+    int offset_factor = (16 * ((scale - 1) / 2));
+    int x_origin = x - offset_factor;
+    int z_origin = z - offset_factor;
+    int width = 16 * scale;
+    int size = height * width * width;
+    int chunk_blocks = 256 * height;
+    int cell_width = stack->cell_size_x << 2;
+    int cell_height = stack->cell_size_y << 2;
+    int xz_samples = (width / cell_width) + 1;
     int y_samples = (height / cell_height) + 1;
     int sample_size = xz_samples * xz_samples * y_samples;
-    int largest_init_size = 17 * 17 * state->final_density->cache_2d_len;
-    sem_wait(&state->fd_sem);
-    vkResetCommandBuffer(state->shaders[0]->vk_cmd, 0);
+    int largest_init_size = (width+1) * (width+1) * stack->cache_2d_len;
+
+    // Get and return center chunk if cached
+    uint64_t cached_chunk_index = get_cached_chunk_index(state->cache_map_len, x, z, fdIndex);
+    float* cached_densities = cache_map_get(&state->cache_map, cached_chunk_index, x, z, fdIndex);
+    if (cached_densities != NULL) {
+        mtx_unlock(&state->fd_sem);
+        j_ret[0] = cached_chunk_index; // indicates cached return
+        (*env)->ReleaseIntArrayElements(env, j_ret_type, j_ret, 0);
+        return (*env)->NewDirectByteBuffer(env, cached_densities, 256 * height * sizeof(float));
+    } else {
+        j_ret[0] = -1; // indicates computed return
+    }
+    (*env)->ReleaseIntArrayElements(env, j_ret_type, j_ret, 0);
+
+    ShaderData* shader = state->shaders[fdIndex];
+    vkResetCommandBuffer(shader->vk_cmd, 0);
     vkResetFences(state->vk_device, 1, &state->fd_fence);
-    vkBeginCommandBuffer(state->shaders[0]->vk_cmd, &(VkCommandBufferBeginInfo){
+    vkBeginCommandBuffer(shader->vk_cmd, &(VkCommandBufferBeginInfo){
         .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
         .flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT
     });
-    vkCmdBindPipeline(state->shaders[0]->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, state->shaders[0]->vk_pipeline);
+    vkCmdBindPipeline(shader->vk_cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shader->vk_pipeline);
     vkCmdBindDescriptorSets(
-        state->shaders[0]->vk_cmd,
+        shader->vk_cmd,
         VK_PIPELINE_BIND_POINT_COMPUTE,
-        state->shaders[0]->vk_pipeline_layout,
+        shader->vk_pipeline_layout,
         0,
-        state->shaders[0]->vk_desc_sets_len,
-        state->shaders[0]->vk_desc_sets,
+        shader->vk_desc_sets_len,
+        shader->vk_desc_sets,
         0,
         NULL
     );
     // Reset global caches
     vkCmdPushConstants(
-        state->shaders[0]->vk_cmd,
-        state->shaders[0]->vk_pipeline_layout,
+        shader->vk_cmd,
+        shader->vk_pipeline_layout,
         VK_SHADER_STAGE_COMPUTE_BIT,
         0,
         sizeof(int) * 4,
-        &(int[]){x, min_y, z, 1}
+        &(int[]){x_origin, min_y, z_origin, 1}
     );
-    vkCmdDispatch(state->shaders[0]->vk_cmd, (largest_init_size + 63) / 64, 1, 1);
-    vkCmdPipelineBarrier2(state->shaders[0]->vk_cmd,
-        &(VkDependencyInfo){
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .memoryBarrierCount = 1,
-            .pMemoryBarriers = &(VkMemoryBarrier2){
-                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-            }
-        }
+    vkCmdDispatch(shader->vk_cmd, (largest_init_size + 63) / 64, 1, 1);
+    VkMemoryBarrier barrier = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+    };
+    vkCmdPipelineBarrier(
+        shader->vk_cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        1, &barrier,
+        0, NULL,
+        0, NULL
     );
     // Compute interpolated samples
     vkCmdPushConstants(
-        state->shaders[0]->vk_cmd,
-        state->shaders[0]->vk_pipeline_layout,
+        shader->vk_cmd,
+        shader->vk_pipeline_layout,
         VK_SHADER_STAGE_COMPUTE_BIT,
-        0,
-        sizeof(int) * 4,
-        &(int[]){x, min_y, z, 2}
+        sizeof(int) * 3,
+        sizeof(int),
+        &(int[]){2}
     );
-    vkCmdDispatch(state->shaders[0]->vk_cmd, (sample_size + 63) / 64, 1, 1);
-    vkCmdPipelineBarrier2(state->shaders[0]->vk_cmd,
-        &(VkDependencyInfo){
-            .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-            .memoryBarrierCount = 1,
-            .pMemoryBarriers = &(VkMemoryBarrier2){
-                .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
-                .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-                .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-            }
-        }
+    vkCmdDispatch(shader->vk_cmd, (sample_size + 63) / 64, 1, 1);
+    vkCmdPipelineBarrier(
+        shader->vk_cmd,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0,
+        1, &barrier,
+        0, NULL,
+        0, NULL
     );
     // Compute full chunk
     vkCmdPushConstants(
-        state->shaders[0]->vk_cmd,
-        state->shaders[0]->vk_pipeline_layout,
+        shader->vk_cmd,
+        shader->vk_pipeline_layout,
         VK_SHADER_STAGE_COMPUTE_BIT,
-        0,
-        sizeof(int) * 4,
-        &(int[]){x, min_y, z, 0}
+        sizeof(int) * 3,
+        sizeof(int),
+        &(int[]){3}
     );
-    vkCmdDispatch(state->shaders[0]->vk_cmd, (size + 63) / 64, 1, 1);
+    vkCmdDispatch(shader->vk_cmd, (size + 63) / 64, 1, 1);
     vkCmdPipelineBarrier(
-        state->shaders[0]->vk_cmd,
+        shader->vk_cmd,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
-        0, 0, NULL, 1,
-        &(VkBufferMemoryBarrier){
+        0,
+        0, NULL,
+        1, &(VkBufferMemoryBarrier){
             .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
             .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
             .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
             .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = state->shaders[0]->shader_mem[10].vk_buf[0],
+            .buffer = shader->shader_mem[10].vk_buf[0],
             .offset = 0,
             .size = VK_WHOLE_SIZE
         },
@@ -1273,44 +1017,98 @@ Java_com_endrf_LudicrousEngine_fillNoiseAccel(JNIEnv* env, jclass cls, jlong ins
     );
     // Copy GPU output buffer to CPU
     vkCmdCopyBuffer(
-        state->shaders[0]->vk_cmd,
-        state->shaders[0]->shader_mem[10].vk_buf[0],
-        state->shaders[0]->shader_mem[11].vk_buf[0],
+        shader->vk_cmd,
+        shader->shader_mem[10].vk_buf[0],
+        shader->shader_mem[11].vk_buf[0],
         1,
-        &(VkBufferCopy){ .srcOffset = 0, .dstOffset = 0, .size = sizeof(double) * size }
+        &(VkBufferCopy){ .srcOffset = 0, .dstOffset = 0, .size = sizeof(float) * size }
     );
-    vkEndCommandBuffer(state->shaders[0]->vk_cmd);
-    vkQueueSubmit(state->vk_queue, 1,
+    // Ensure copy with barrier
+    vkCmdPipelineBarrier(
+        shader->vk_cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        0,
+        0, NULL,
+        1, &(VkBufferMemoryBarrier){
+            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .buffer = shader->shader_mem[11].vk_buf[0],
+            .offset = 0,
+            .size = VK_WHOLE_SIZE
+        },
+        0, NULL
+    );
+    vkEndCommandBuffer(shader->vk_cmd);
+    VkResult vk_res = vkQueueSubmit(state->vk_queue, 1,
         &(VkSubmitInfo){
             .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
             .commandBufferCount = 1,
-            .pCommandBuffers = &(state->shaders[0]->vk_cmd)
+            .pCommandBuffers = &(shader->vk_cmd)
         },
         state->fd_fence
     );
+    if (vk_res != VK_SUCCESS)
+        log_err("Error on vkQueueSubmit");
 
-    vkWaitForFences(state->vk_device, 1, &state->fd_fence, VK_TRUE, UINT64_MAX);
-    double* densities;
+    float* final_densities;
+    vk_res = vkWaitForFences(state->vk_device, 1, &state->fd_fence, VK_TRUE, UINT64_MAX);
+    if (vk_res != VK_SUCCESS)
+        log_err("Error on vkWaitForFences");
     vkMapMemory(
         state->vk_device,
-        state->shaders[0]->shader_mem[11].vk_mem,
+        shader->shader_mem[11].vk_mem,
         0,
-        sizeof(double) * size,
+        sizeof(float) * size,
         0,
-        (void**)&densities
+        (void**)&final_densities
     );
-    jobject buffer = (*env)->NewDirectByteBuffer(env, densities, size * sizeof(double));
-    /* clock_gettime(CLOCK_MONOTONIC_RAW, &end);
-    printf("time: %lld nanoseconds\n", (end.tv_sec - start.tv_sec) * 1000000000LL + (end.tv_nsec - start.tv_nsec));
-    fflush(stdout); */
+    float* densities = (float*)malloc(size * sizeof(float));
+    memcpy(densities, final_densities, size * sizeof(float));
+    vkUnmapMemory(state->vk_device, shader->shader_mem[11].vk_mem);
+    mtx_unlock(&state->fd_sem);
+    float* center_densities = (float*)malloc(256 * height * sizeof(float));
+
+    for (int z_coord = z_origin, z_local = 0; z_coord <= z + offset_factor; z_coord += 16, z_local++) {
+        for (int x_coord = x_origin, x_local = 0; x_coord <= x + offset_factor; x_coord += 16, x_local++) {
+            if (x_coord == x && z_coord == z) {
+                memcpy(center_densities,
+                    densities + (z_local * chunk_blocks * scale) + (x_local * chunk_blocks),
+                    256 * height * sizeof(float)
+                );
+                continue;
+            }
+            float* chunk = (float*)malloc(256 * height * sizeof(float));
+            memcpy(
+                chunk,
+                densities + (z_local * chunk_blocks * scale) + (x_local * chunk_blocks),
+                256 * height * sizeof(float)
+            );
+            cache_map_put(&state->cache_map, state->cache_map_len, x_coord, z_coord, fdIndex, chunk);
+        }
+    }
+
+    free(densities);
+    jobject buffer = (*env)->NewDirectByteBuffer(
+        env,
+        center_densities,
+        256 * height * sizeof(float)
+    );
     return buffer;
 }
 
 JNIEXPORT void JNICALL
-Java_com_endrf_LudicrousEngine_releaseDensities(JNIEnv* env, jclass cls, jlong instancePtr) {
+Java_com_endrf_LudicrousEngine_releaseDensities(JNIEnv* env, jclass cls, jlong instancePtr, jobject buffer, jint chunk_index) {
     InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
-    vkUnmapMemory(state->vk_device, state->shaders[0]->shader_mem[11].vk_mem);
-    sem_post(&state->fd_sem);
+    if (chunk_index >= 0) {
+        cache_map_release(&state->cache_map, chunk_index);
+    } else {
+        void* buf_ptr = (*env)->GetDirectBufferAddress(env, buffer);
+        free(buf_ptr);
+    }
 }
 
 JNIEXPORT jdoubleArray JNICALL
@@ -1324,10 +1122,10 @@ Java_com_endrf_LudicrousEngine_fillNoise(JNIEnv* env, jclass cls, jlong instance
 
     int size = height * 16 * 16;
     double* densities = (double*)malloc(size * sizeof(double));
-    int num_interp_functions = state->final_density->interp_len;
-    int num_cache_once_functions = state->final_density->cache_once_len;
-    int num_cache_flat_functions = state->final_density->cache_flat_len;
-    int num_cache_2d_functions = state->final_density->cache_2d_len;
+    int num_interp_functions = state->final_density[0]->interp_len;
+    int num_cache_once_functions = state->final_density[0]->cache_once_len;
+    int num_cache_flat_functions = state->final_density[0]->cache_flat_len;
+    int num_cache_2d_functions = state->final_density[0]->cache_2d_len;
 
     EvalCache eval_cache;
     if (num_interp_functions == 0) {
@@ -1410,7 +1208,7 @@ Java_com_endrf_LudicrousEngine_fillNoise(JNIEnv* env, jclass cls, jlong instance
                                 y_in_chunk * 256 +
                                 z_in_chunk * 16 +
                                 x_in_chunk
-                            ] = evaluate_stack(state->final_density, x + x_in_chunk, y_in_chunk + min_y, z + z_in_chunk, &eval_cache);
+                            ] = evaluate_stack(state->final_density[0], x + x_in_chunk, y_in_chunk + min_y, z + z_in_chunk, &eval_cache);
                         }
                     }
                 }
@@ -1507,7 +1305,7 @@ Java_com_endrf_LudicrousEngine_evalDensityFunction(JNIEnv* env, jclass cls, jlon
     InstanceState* state = (InstanceState*)(intptr_t)instancePtr;
     //struct timespec start, end;
     //clock_gettime(CLOCK_MONOTONIC_RAW, &start);
-    double result = evaluate_stack(state->final_density, x, y, z, NULL);
+    double result = evaluate_stack(state->final_density[0], x, y, z, NULL);
     //printf("num interps %d\n", ((EvalStack*)state->data)->cache_once_len);
     //fflush(stdout);
     //clock_gettime(CLOCK_MONOTONIC_RAW, &end);

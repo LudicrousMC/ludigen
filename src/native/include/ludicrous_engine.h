@@ -1,11 +1,23 @@
 #ifndef LUDICROUS_ENGINE_H
 #define LUDICROUS_ENGINE_H
-#include <semaphore.h>
 #include <vulkan/vulkan.h>
 #include "stack_builder.h"
+#include "tinycthread.h"
 #include "yyjson.h"
 
 typedef struct ShaderData ShaderData;
+
+typedef struct ChunkData {
+    mtx_t sem;
+    int x;
+    int z;
+    int fd_index;
+    float* densities;
+} ChunkData;
+
+typedef struct CacheMap {
+    ChunkData* chunks;
+} CacheMap;
 
 typedef struct InstanceState {
     // Vulkan instance (might want this to be global eventually)
@@ -21,9 +33,11 @@ typedef struct InstanceState {
     // Shader pipelines and related data
     ShaderData** shaders;
     size_t shaders_len;
-    EvalStack* final_density;
+    EvalStack** final_density;
     VkFence fd_fence;
-    sem_t fd_sem;
+    mtx_t fd_sem;
+    CacheMap cache_map;
+    size_t cache_map_len;
 } InstanceState;
 
 Node* build_tree_from_json_recursive(yyjson_val* json);
