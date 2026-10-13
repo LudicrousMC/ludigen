@@ -26,8 +26,8 @@ However, if you do use this mod:
 - clang
 - Vulkan SDK or Shaderc (for glslc)
 - xxd (comes with Git on Windows)
-- MinGW-w64 gendef (for compiling Windows Vulkan library)
-- MinGW-w64 dlltool (for compiling Windows Vulkan library)
+- MinGW-W64 (for cross-compiling to Windows)
+- MinGW-W64 gendef and dlltool (for cross-compiling Windows Vulkan library)
 
 ### Creating a Jar file
 
